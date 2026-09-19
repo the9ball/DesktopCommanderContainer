@@ -1,0 +1,3 @@
+[submodule "DesktopCommanderMCP"]
+	path = DesktopCommanderMCP
+	url = https://github.com/wonderwhy-er/DesktopCommanderMCP.git
