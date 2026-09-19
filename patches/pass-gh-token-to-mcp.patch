@@ -1,0 +1,19 @@
+diff --git a/src/remote-device/desktop-commander-integration.ts b/src/remote-device/desktop-commander-integration.ts
+index d82e625..ccf906a 100644
+--- a/src/remote-device/desktop-commander-integration.ts
++++ b/src/remote-device/desktop-commander-integration.ts
+@@ -75,8 +75,12 @@ export class DesktopCommanderIntegration {
+             // welcome page in a browser the remote user would never see.
+             this.mcpTransport = new StdioClientTransport({
+                 ...config,
+-                env: { ...getDefaultEnvironment(), ...config.env, DC_REMOTE_DEVICE: 'true' }
+-            });
++                env: {
++                    ...getDefaultEnvironment(),
++                    ...config.env,
++                    ...(process.env.GH_TOKEN ? { GH_TOKEN: process.env.GH_TOKEN } : {}),
++                    DC_REMOTE_DEVICE: 'true'
++                }            });
+ 
+             // Create MCP client
+             console.debug('[DEBUG] Creating MCP Client');
