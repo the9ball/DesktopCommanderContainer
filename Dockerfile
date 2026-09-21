@@ -8,7 +8,8 @@ RUN apk add --no-cache \
     git \
     github-cli \
     jq \
-    patch
+    patch \
+    python3
 
 WORKDIR /usr/src/app
 
