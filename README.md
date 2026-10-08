@@ -30,7 +30,8 @@ Desktop Commander is included as a Git submodule and built inside the image.
 DesktopCommanderContainer/
 ├── DesktopCommanderMCP/
 ├── patches/
-│   └── pass-gh-token-to-mcp.patch
+│   ├── pass-gh-token-to-mcp.patch
+│   └── inherit-working-directory.patch
 ├── Dockerfile
 ├── compose.yaml
 ├── bootstrap.sh
@@ -121,7 +122,7 @@ The Docker build:
 1. installs the required Alpine packages
 2. installs Desktop Commander Node dependencies
 3. copies the Desktop Commander submodule source
-4. applies the local `GH_TOKEN` forwarding patch
+4. applies the local `GH_TOKEN` forwarding and working-directory patches
 5. builds Desktop Commander
 6. installs the container bootstrap script
 
@@ -278,9 +279,10 @@ Container-specific behavior is implemented through:
 
 ```text
 patches/pass-gh-token-to-mcp.patch
+patches/inherit-working-directory.patch
 ```
 
-The patch changes the `StdioClientTransport` environment from the upstream default to:
+The token patch changes the `StdioClientTransport` environment from the upstream default to:
 
 ```ts
 env: {
@@ -297,13 +299,17 @@ Only `GH_TOKEN` is explicitly forwarded.
 
 The entire `process.env` is deliberately not forwarded, to avoid exposing unrelated environment variables or secrets to Desktop Commander processes.
 
-The patch is applied during the Docker build:
+The working-directory patch sets the local MCP launch configuration to `cwd: process.cwd()` so it inherits the Remote Device's working directory. The MCP entrypoint remains an absolute path to the built server.
+
+Both patches are applied during the Docker build:
 
 ```dockerfile
 COPY DesktopCommanderMCP/ .
 
 COPY patches/pass-gh-token-to-mcp.patch /tmp/
+COPY patches/inherit-working-directory.patch /tmp/
 RUN patch -p1 < /tmp/pass-gh-token-to-mcp.patch \
+    && patch -p1 < /tmp/inherit-working-directory.patch \
     && npm run build
 ```
 
@@ -333,31 +339,27 @@ If both succeed, GitHub CLI commands executed through Desktop Commander have acc
 
 ## Working Directory
 
-The Remote Device launches the local Desktop Commander MCP from its own build directory.
-
-As a result, terminal commands should not assume that their initial working directory is the cloned repository.
-
-For Git- or repository-dependent operations, explicitly use:
+`bootstrap.sh` changes to the cloned repository before starting the Remote Device. The local MCP inherits that working directory, so commands started through Desktop Commander initially run in:
 
 ```text
 /workspace/<repository-name>
 ```
 
-as the working directory.
+The directory name is derived from `GITHUB_REPOSITORY`; changing the configured repository uses the same mechanism without a repository-specific path in the patch.
 
-For example, running:
+After rebuilding and recreating the container, verify through Desktop Commander's `start_process`:
 
 ```sh
-git status
+pwd
 ```
 
-outside the repository may produce:
+For example, with `GITHUB_REPOSITORY=the9ball/.dotfiles`, the expected output is:
 
 ```text
-fatal: not a git repository
+/workspace/.dotfiles
 ```
 
-This does not indicate a Git or authentication problem.
+Then run `git status` and `gh auth status` through Desktop Commander. Neither an explicit `cd` nor `git -C` is needed for the initial repository, and the existing `GH_TOKEN` forwarding remains in effect.
 
 ## Typical Development Workflow
 
@@ -422,6 +424,7 @@ If the upstream source has changed incompatibly with the local patch, the build 
 
 ```text
 patches/pass-gh-token-to-mcp.patch
+patches/inherit-working-directory.patch
 ```
 
 Review the upstream changes and either:
@@ -491,13 +494,13 @@ gh auth status
 
 ### `git` reports that the current directory is not a repository
 
-Run the command using the repository under:
+Check `pwd` through Desktop Commander. The initial directory should be:
 
 ```text
 /workspace/<repository-name>
 ```
 
-as the working directory.
+If it is `/usr/src/app/dist`, rebuild the image and recreate the container so the working-directory patch takes effect. If a command explicitly changed directories, return to the repository before running Git commands.
 
 ### The patch fails during Docker build
 

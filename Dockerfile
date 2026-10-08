@@ -21,7 +21,9 @@ RUN npm install --ignore-scripts \
 COPY DesktopCommanderMCP/ .
 
 COPY patches/pass-gh-token-to-mcp.patch /tmp/
+COPY patches/inherit-working-directory.patch /tmp/
 RUN patch -p1 < /tmp/pass-gh-token-to-mcp.patch \
+    && patch -p1 < /tmp/inherit-working-directory.patch \
     && npm run build
 
 COPY bootstrap.sh /usr/local/bin/bootstrap

@@ -1,0 +1,17 @@
+diff --git a/src/remote-device/desktop-commander-integration.ts b/src/remote-device/desktop-commander-integration.ts
+--- a/src/remote-device/desktop-commander-integration.ts
++++ b/src/remote-device/desktop-commander-integration.ts
+@@ -165,3 +165,4 @@ export class DesktopCommanderIntegration {
++    /** Resolve a local or global MCP launch configuration, or null if unavailable. */
+     async resolveMcpConfig(): Promise<McpConfig | null> {
+         console.debug('[DEBUG] Resolving MCP config...');
+         // Option 1: Development/Local Build
+@@ -175,7 +176,7 @@ export class DesktopCommanderIntegration {
+             return {
+                 command: process.execPath, // Use the current node executable
+                 args: [devPath],
+-                cwd: path.dirname(devPath)
++                cwd: process.cwd()
+             };
+         } catch {
+             console.debug('[DEBUG] Local dev path not found, trying global installation');
