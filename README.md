@@ -26,6 +26,9 @@ Docker container
 
 Desktop Commander is included as a Git submodule and built inside the image.
 
+The pinned version is **v0.3.0** (67694caa7f54ee2ca70d455ed730be231ed3fbfc).
+The container patches retain the restricted MCP environment (GH_TOKEN plus the SDK defaults) and the repository working directory.
+
 ```text
 DesktopCommanderContainer/
 ├── DesktopCommanderMCP/
@@ -120,7 +123,7 @@ docker compose build
 The Docker build:
 
 1. installs the required Alpine packages
-2. installs Desktop Commander Node dependencies
+2. copies the vendored telemetry package and installs locked Node dependencies with `npm ci`
 3. copies the Desktop Commander submodule source
 4. applies the local `GH_TOKEN` forwarding and working-directory patches
 5. builds Desktop Commander
@@ -411,8 +414,11 @@ DesktopCommanderMCP
 To update it:
 
 ```sh
-git submodule update --remote DesktopCommanderMCP
+git -C DesktopCommanderMCP fetch origin --tags
+git -C DesktopCommanderMCP checkout --detach <stable-release-tag>
 ```
+
+Choose the latest stable release tag after reviewing its release notes; the default branch can include unreleased changes. Update the pinned-version note above when changing the submodule.
 
 Then rebuild:
 

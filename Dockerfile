@@ -15,7 +15,8 @@ RUN apk add --no-cache \
 WORKDIR /usr/src/app
 
 COPY DesktopCommanderMCP/package*.json ./
-RUN npm install --ignore-scripts \
+COPY DesktopCommanderMCP/vendor/ ./vendor/
+RUN npm ci --ignore-scripts \
     && npm rebuild @vscode/ripgrep
 
 COPY DesktopCommanderMCP/ .

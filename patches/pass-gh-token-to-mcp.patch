@@ -1,19 +1,49 @@
 diff --git a/src/remote-device/desktop-commander-integration.ts b/src/remote-device/desktop-commander-integration.ts
-index d82e625..ccf906a 100644
+index 3733702..a142d11 100644
 --- a/src/remote-device/desktop-commander-integration.ts
 +++ b/src/remote-device/desktop-commander-integration.ts
-@@ -75,8 +75,12 @@ export class DesktopCommanderIntegration {
-             // welcome page in a browser the remote user would never see.
-             this.mcpTransport = new StdioClientTransport({
-                 ...config,
--                env: { ...getDefaultEnvironment(), ...config.env, DC_REMOTE_DEVICE: 'true' }
--            });
-+                env: {
-+                    ...getDefaultEnvironment(),
-+                    ...config.env,
-+                    ...(process.env.GH_TOKEN ? { GH_TOKEN: process.env.GH_TOKEN } : {}),
-+                    DC_REMOTE_DEVICE: 'true'
-+                }            });
+@@ -1,16 +1,17 @@
+ import path from 'path';
+ import fs from 'fs/promises';
+ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
++import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
+ import { fileURLToPath } from 'url';
+ import { captureRemote } from '../utils/capture.js';
+ import { resolveShellPath } from '../utils/shell.js';
  
-             // Create MCP client
-             console.debug('[DEBUG] Creating MCP Client');
+-/** The device's environment, as the string map a child process gets */
++/** Return the SDK environment plus the GitHub token authorized for container commands. */
+ function deviceEnvironment(): Record<string, string> {
+-    return Object.fromEntries(
+-        Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+-    );
++    return {
++        ...getDefaultEnvironment(),
++        ...(process.env.GH_TOKEN ? { GH_TOKEN: process.env.GH_TOKEN } : {})
++    };
+ }
+ 
+ // Restart pacing: grows with consecutive failures, caps, and jitters so a
+@@ -82,6 +83,7 @@ export class DesktopCommanderIntegration {
+         this.disconnectHandler?.(reason);
+     }
+ 
++    /** Start the local MCP server and verify it can execute tool calls. */
+     async initialize() {
+         console.debug('[DEBUG] DesktopCommanderIntegration.initialize() called');
+         const config = await this.resolveMcpConfig();
+@@ -96,11 +98,8 @@ export class DesktopCommanderIntegration {
+ 
+         try {
+             console.debug('[DEBUG] Creating StdioClientTransport');
+-            // The server gets the device's whole environment, as a Desktop
+-            // Commander started directly would: what the user set for the
+-            // device (telemetry opt-out, container variables, what commands
+-            // need) must reach the tools. The SDK's default passes only a
+-            // minimal set, meant for starting untrusted servers.
++            // Container commands receive only the SDK defaults and the authorized
++            // GitHub token, keeping other device environment variables private.
+             // DC_REMOTE_DEVICE tells the spawned server it is serving remote
+             // services, so it suppresses local-only behavior like opening the
+             // welcome page in a browser the remote user would never see.

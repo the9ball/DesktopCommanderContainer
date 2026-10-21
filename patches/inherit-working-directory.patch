@@ -1,12 +1,16 @@
 diff --git a/src/remote-device/desktop-commander-integration.ts b/src/remote-device/desktop-commander-integration.ts
+index 3733702..63c94bb 100644
 --- a/src/remote-device/desktop-commander-integration.ts
 +++ b/src/remote-device/desktop-commander-integration.ts
-@@ -165,3 +165,4 @@ export class DesktopCommanderIntegration {
+@@ -252,6 +252,7 @@ export class DesktopCommanderIntegration {
+         return Math.max(0, this.nextRestartAt - Date.now());
+     }
+ 
 +    /** Resolve a local or global MCP launch configuration, or null if unavailable. */
      async resolveMcpConfig(): Promise<McpConfig | null> {
          console.debug('[DEBUG] Resolving MCP config...');
          // Option 1: Development/Local Build
-@@ -175,7 +176,7 @@ export class DesktopCommanderIntegration {
+@@ -265,7 +266,7 @@ export class DesktopCommanderIntegration {
              return {
                  command: process.execPath, // Use the current node executable
                  args: [devPath],
