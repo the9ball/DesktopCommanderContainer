@@ -2,7 +2,8 @@ FROM node:lts-alpine
 
 ENV MCP_CLIENT_DOCKER=true
 
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
     bash \
     curl \
     git \

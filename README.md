@@ -122,7 +122,7 @@ docker compose build
 
 The Docker build:
 
-1. installs the required Alpine packages
+1. upgrades all installed Alpine packages and installs the required tools
 2. copies the vendored telemetry package and installs locked Node dependencies with `npm ci`
 3. copies the Desktop Commander submodule source
 4. applies the local `GH_TOKEN` forwarding and working-directory patches
@@ -132,8 +132,50 @@ The Docker build:
 To force a clean rebuild:
 
 ```sh
-docker compose build --no-cache
+docker compose build --pull --no-cache
 ```
+
+### Alpine package updates and TLS verification
+
+The Dockerfile runs `apk upgrade --no-cache` before `apk add --no-cache` in the same build step. This upgrades all installed Alpine packages, including the CA bundle and OpenSSL libraries, from the configured repositories before installing tools. `apk add --no-cache` alone can retain installed packages when dependency constraints are satisfied. Alpine continues to maintain the trust store; certificates are not removed individually.
+
+In the Alpine 3.24.2 image, upgrading the bundle from `20260909-r0` to `20261020-r0` changed curl's result for the eMudhra test endpoint from success to certificate rejection (exit code 60, `unable to get local issuer certificate (20)`). Updating OpenSSL or other packages was not needed to reproduce this fix.
+
+For a manual regression check, build a separate image without reusing build layers, check for remaining package updates against fresh indexes, and run bounded HTTPS checks:
+
+```sh
+docker build --pull --no-cache -t desktopcommandercontainer:ca-check .
+docker run --rm --entrypoint sh desktopcommandercontainer:ca-check -c '
+    set -eu
+    apk update
+    upgradable_packages=$(apk list --upgradable)
+    if [ -n "$upgradable_packages" ]; then
+        printf "%s\n" "$upgradable_packages" >&2
+        exit 1
+    fi
+    apk list --installed ca-certificates-bundle
+    curl --noproxy "*" --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+        --output /dev/null https://example.com/
+    status=0
+    curl --noproxy "*" --silent --show-error --connect-timeout 10 --max-time 30 \
+        --output /dev/null https://dv-g3b-emudhra.we-have-a-problem.com/ \
+        2>/tmp/ca-check-error || status=$?
+    cat /tmp/ca-check-error
+    if [ "$status" -ne 60 ]; then
+        echo "Expected certificate verification exit code 60; got $status" >&2
+        exit 1
+    fi
+    if ! grep -Fq "unable to get local issuer certificate (20)" /tmp/ca-check-error; then
+        echo "Unexpected certificate failure; inspect the endpoint and certificate chain" >&2
+        exit 1
+    fi
+    echo "CA regression check passed"
+'
+```
+
+DNS failures, connection failures, and timeouts do not pass this check. These external endpoints can change or become unavailable; any unexpected result needs investigation of the endpoint, certificate chain, and network before attributing it to the image. Direct HTTPS access is required; a TLS-intercepting proxy can invalidate the result. This is an opt-in check rather than a build-time dependency.
+
+`--pull` refreshes the floating `node:lts-alpine` base, and `--no-cache` forces the package step to run again. Rebuild and recreate deployed containers to receive package updates; existing images and running containers do not update automatically. The selected Alpine repositories must provide the corrected bundle (`20261020-r0` or later). Package versions can change as the base and repositories advance, and updates published after a build may appear in the verification check.
 
 ## Start
 
