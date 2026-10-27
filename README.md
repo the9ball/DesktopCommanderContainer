@@ -556,6 +556,25 @@ If `patch -p1` fails, the pinned upstream source may no longer match the patch.
 
 Review the upstream changes and regenerate the patch against the current submodule commit.
 
+### Python HTML parsing and package management
+
+The image includes Python 3, pip, Beautiful Soup (`beautifulsoup4`), and `lxml` as Alpine packages. HTML parsing is available immediately:
+
+```sh
+python3 -c 'from bs4 import BeautifulSoup; import lxml; print("ok")'
+python3 -m pip --version
+```
+
+Alpine manages the system Python environment. Install additional Python packages in a virtual environment rather than running pip against the system interpreter:
+
+```sh
+python3 -m venv /tmp/analysis-venv
+/tmp/analysis-venv/bin/python -m pip --version
+/tmp/analysis-venv/bin/python -m pip install beautifulsoup4 lxml
+```
+
+Virtual environments are isolated from system packages by default, so install the libraries needed by that environment explicitly. Use `/workspace` instead of `/tmp` when the environment needs to persist across container recreation; remove temporary environments after use.
+
 ### A repository-specific validation command is missing
 
 The image intentionally installs only a small general-purpose toolchain:
