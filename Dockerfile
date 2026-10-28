@@ -10,6 +10,9 @@ RUN apk upgrade --no-cache \
     github-cli \
     jq \
     patch \
+    py3-beautifulsoup4 \
+    py3-lxml \
+    py3-pip \
     python3 \
     ripgrep
 
