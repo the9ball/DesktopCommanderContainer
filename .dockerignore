@@ -3,9 +3,11 @@
 !Dockerfile
 !.dockerignore
 !bootstrap.sh
+!container-logging.mjs
 !patches/
 !patches/pass-gh-token-to-mcp.patch
 !patches/inherit-working-directory.patch
+!patches/runtime-dependencies.patch
 !DesktopCommanderMCP/
 !DesktopCommanderMCP/package.json
 !DesktopCommanderMCP/package-lock.json
@@ -37,4 +39,14 @@
 **/*.pem
 **/*.pfx
 **/*.p12
+**/.netrc
+**/.git-credentials
+**/.ssh
+**/.ssh/**
+**/.aws
+**/.aws/**
+**/.config
+**/.config/**
+**/id_rsa*
+**/id_ed25519*
 **/.DS_Store

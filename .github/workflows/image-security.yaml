@@ -1,0 +1,52 @@
+name: Image security
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Rebuild with current base and packages
+        id: build
+        run: docker build --pull --no-cache -t commander-security:check .
+      - name: Check protected console and runtime dependencies
+        run: |
+          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node commander-security:check --test --test-timeout=30000 /tmp/container-logging.test.mjs /tmp/runtime-dependencies.test.mjs)
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          docker cp tests/container-logging.test.mjs "$container:/tmp/container-logging.test.mjs"
+          docker cp tests/runtime-dependencies.test.mjs "$container:/tmp/runtime-dependencies.test.mjs"
+          docker start --attach "$container"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
+      - name: Scan OS and application dependencies
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: commander-security:check
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: 'false'
+          exit-code: '1'
+      - name: Scan image filesystem for secrets without printing matches
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: commander-security:check
+          scanners: secret
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          format: template
+          template: '{{range .}}{{if .Secrets}}Secret findings detected{{"\n"}}{{end}}{{end}}'
+          exit-code: '1'

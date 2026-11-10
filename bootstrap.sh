@@ -20,4 +20,4 @@ fi
 
 cd "${repo_dir}"
 
-exec node /usr/src/app/dist/remote-device/device.js
+exec node --import /usr/local/lib/container-logging.mjs /usr/src/app/dist/remote-device/device.js
