@@ -32,6 +32,7 @@ RUN patch -p1 < /tmp/pass-gh-token-to-mcp.patch \
     && npm run build
 
 COPY bootstrap.sh /usr/local/bin/bootstrap
+COPY container-logging.mjs /usr/local/lib/container-logging.mjs
 RUN chmod +x /usr/local/bin/bootstrap
 
 WORKDIR /workspace
