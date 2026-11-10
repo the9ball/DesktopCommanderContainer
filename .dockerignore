@@ -7,6 +7,7 @@
 !patches/
 !patches/pass-gh-token-to-mcp.patch
 !patches/inherit-working-directory.patch
+!patches/runtime-dependencies.patch
 !DesktopCommanderMCP/
 !DesktopCommanderMCP/package.json
 !DesktopCommanderMCP/package-lock.json

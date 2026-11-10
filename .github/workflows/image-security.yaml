@@ -24,11 +24,12 @@ jobs:
       - name: Rebuild with current base and packages
         id: build
         run: docker build --pull --no-cache -t commander-security:check .
-      - name: Check protected console output
+      - name: Check protected console and runtime dependencies
         run: |
-          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node commander-security:check --test /tmp/container-logging.test.mjs)
+          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node commander-security:check --test --test-timeout=30000 /tmp/container-logging.test.mjs /tmp/runtime-dependencies.test.mjs)
           trap 'docker rm -f "$container" >/dev/null' EXIT
           docker cp tests/container-logging.test.mjs "$container:/tmp/container-logging.test.mjs"
+          docker cp tests/runtime-dependencies.test.mjs "$container:/tmp/runtime-dependencies.test.mjs"
           docker start --attach "$container"
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
       - name: Scan OS and application dependencies

@@ -34,7 +34,8 @@ DesktopCommanderContainer/
 ├── DesktopCommanderMCP/
 ├── patches/
 │   ├── pass-gh-token-to-mcp.patch
-│   └── inherit-working-directory.patch
+│   ├── inherit-working-directory.patch
+│   └── runtime-dependencies.patch
 ├── Dockerfile
 ├── compose.yaml
 ├── bootstrap.sh
@@ -122,12 +123,14 @@ docker compose build
 
 The Docker build:
 
-1. upgrades all installed Alpine packages and installs the required tools
-2. copies the vendored telemetry package and installs locked Node dependencies with `npm ci`
-3. copies the Desktop Commander submodule source
-4. applies the local `GH_TOKEN` forwarding and working-directory patches
-5. builds Desktop Commander
-6. installs the container bootstrap script
+1. upgrades Alpine packages, installs the required tools and pins npm to `11.21.2`
+2. copies the submodule source into a build stage and applies the runtime dependency lock patch
+3. installs locked Node dependencies with `npm ci` and deliberately rebuilds `@vscode/ripgrep`
+4. applies the local `GH_TOKEN` forwarding and working-directory patches, then builds Desktop Commander and its browser UIs
+5. prunes development dependencies with lifecycle scripts disabled
+6. copies the built, pruned application into a runtime stage descended directly from the base, then installs the bootstrap and protected logging preload
+
+The runtime dependency patch updates `body-parser` to `2.4.0`, `markdown-it` to `14.3.3`, and its required `qs` resolution to `6.17.1`. It preserves the pinned submodule and all other lock entries. The final image retains the application source, `dist`, manifests and vendored package layout, but excludes installed development tools such as `nexe`, `decompress` and `node-forge`. Development dependencies can still exist in the disposable build stage and local build cache; the runtime stage does not inherit those layers. The separately bundled npm is updated within major version 11, and its download cache is cleaned in the same build step.
 
 To force a clean rebuild:
 
@@ -622,6 +625,8 @@ The floating LTS tag is retained to preserve the existing update path with minim
 
 `.github/workflows/image-security.yaml` builds with `--pull --no-cache`, tests the log filter without networking or volumes, and scans the resulting local image with Trivy on PRs targeting `master`, pushes to `master`, every Monday at 03:23 UTC, and manual dispatch. The vulnerability scanner fails on HIGH/CRITICAL OS or application findings, including findings without a fix. A separate secret scan checks all severities and reports only that findings exist, without matched values or snippets. It checks the image filesystem; it does not establish that deleted files in older layers are clean. Build/scan errors also fail the job. Actions are pinned to commit SHAs and the workflow has read-only repository permission; the runtime PAT is never supplied. It neither publishes images nor deploys containers. After a successful run, rebuild and recreate the deployment to apply updates; review failed runs promptly and update Action/scanner pins periodically. A passing workflow is not a guarantee that no vulnerabilities exist.
 
+The first PR #12 scan reported 43 HIGH and 2 CRITICAL findings. The two unfixed `decompress 4.2.1` findings were introduced by development-only `nexe -> download`; `node-forge` was introduced by development-only `@anthropic-ai/mcpb`. The production dependency updates and multi-stage pruning address the application findings, while npm `11.21.2` contains patched `brace-expansion 5.0.12` and `undici 6.29.1`. Scanner thresholds and failure behavior are unchanged. Check the corrected candidate's CI results rather than assuming these changes have cleared every finding. Update the npm pin and dependency patch when future scans require it; do not suppress findings without evidence of non-applicability.
+
 ### Secrets and build boundaries
 
 The `.dockerignore` allowlist sends only Dockerfile inputs. Additional final exclusions protect nested `.env` / `.env.*`, package-manager credentials, `.netrc`, Git credentials, SSH/cloud configuration, private keys, generated dependencies and logs. Do not place secrets in allowed source files, package manifests or vendored code: filename exclusions cannot recognize arbitrary secret content. No build argument, Dockerfile environment variable or build secret carries the runtime PAT. Compose injects it only when the container starts; build steps must stay unauthenticated.
@@ -637,14 +642,16 @@ After building, run the regression test in an isolated container without host mo
 ```sh
 docker build --pull --no-cache -t commander-security:check .
 container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true \
-    --entrypoint node commander-security:check --test /tmp/container-logging.test.mjs)
+    --entrypoint node commander-security:check --test --test-timeout=30000 \
+    /tmp/container-logging.test.mjs /tmp/runtime-dependencies.test.mjs)
 docker cp tests/container-logging.test.mjs "$container:/tmp/container-logging.test.mjs"
+docker cp tests/runtime-dependencies.test.mjs "$container:/tmp/runtime-dependencies.test.mjs"
 docker start --attach "$container"
 docker inspect --format '{{.State.ExitCode}}' "$container"
 docker rm "$container"
 ```
 
-The test uses synthetic secrets only. Check the container exit code, not just whether Docker attached successfully. After authorized deployment/recreation, inspect only the relevant fields:
+The log test uses synthetic secrets only. The runtime suite imports the Remote Device without starting it, checks bundled UI scripts and development-package removal, and exercises WebSocket framing, ripgrep, Excel, PDF serialization, Markdown, image encoding and zip operations offline. PDF dependency loading does not establish browser-based PDF rendering or all document formats. Check the container exit code, not just whether Docker attached successfully. After authorized deployment/recreation, inspect only the relevant fields:
 
 ```sh
 docker compose config --quiet
@@ -659,7 +666,9 @@ All capability fields should be zero and `NoNewPrivs` should be `1`; mounts must
 
 Local validation on 2026-11-11 used the existing image `sha256:7df79b5e2d99f04d442449d3d5385325d691f28dbce9c2313ef06f485db95dc9` in disposable containers. The new preload was copied into an isolated container: its synthetic PAT/payload regression passed. A separate Compose project with fresh volumes passed configuration validation, all five zero-capability checks, `NoNewPrivs: 1`, Git/gh startup, and sentinel persistence after forced recreation. Its temporary resources were removed; the running deployment and its existing volumes were untouched. A scratch build with a synthetic context verified 8 allowed files and 17 excluded secret/configuration canaries using the actual `.dockerignore`.
 
-The registry lookup failed with Docker credential-helper error `A specified logon session does not exist`; the base image was not cached locally. The modified full image build, its build history/all layers, its vulnerability scan and the GitHub Actions run remain **unverified**. No clean-image or clean-production-log claim is made. Reconnection after recreating the deployment, authenticated clone/gh operations under the new restrictions, existing-volume read/write after recreation, and actual Git push also remain **unverified**. These require an image build in a working registry environment, final review, and authorized integration testing. The supplied implementation instruction did not authorize push.
+During the PR #12 review, a new disposable container derived from that image was updated with the corrected lock and npm, rebuilt, and pruned. After disconnecting its external network, all seven console/runtime regression tests passed. This verifies the application dependency changes against that existing base, not the new Dockerfile's stage ancestry or the latest floating base; those require the exact candidate's CI build and scans.
+
+The registry lookup and subsequent local clean build failed with Docker credential-helper error `A specified logon session does not exist`; the base image was not cached locally. Local full-image validation remains **unverified**. The initial GitHub Actions run did build the image and pass console and secret scans, but failed the vulnerability gate as described above. Use PR #12 for the corrected candidate's exact commit and CI outcomes. No all-layer or clean-production-log claim is made. Reconnection after recreating the deployment, authenticated clone/gh operations under the new restrictions, existing-volume read/write after recreation, and actual in-container Git push also remain **unverified**. These require final review and authorized integration testing. Publishing the implementation branch is separate from an authenticated Git push compatibility test inside the container.
 
 ### Handoff to #10 and #11
 
