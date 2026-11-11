@@ -44,9 +44,10 @@ jobs:
       - name: Check issuer in isolation
         if: matrix.target == 'token-issuer'
         run: |
-          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint sh commander-security:token-issuer -c 'test ! -e /usr/bin/git && test ! -e /usr/bin/gh && node --test --test-timeout=30000 /tmp/github-app-auth.test.mjs')
+          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node commander-security:token-issuer --test --test-timeout=30000 /tmp/github-app-auth.test.mjs /tmp/github-app-issuer-image.test.mjs)
           trap 'docker rm -f "$container" >/dev/null' EXIT
           docker cp tests/github-app-auth.test.mjs "$container:/tmp/github-app-auth.test.mjs"
+          docker cp tests/github-app-issuer-image.test.mjs "$container:/tmp/github-app-issuer-image.test.mjs"
           docker start --attach "$container"
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
       - name: Check named-volume authentication boundaries

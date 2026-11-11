@@ -62,7 +62,7 @@ docker compose --env-file .env.example config --quiet
 docker compose build --pull
 ```
 
-The default Dockerfile target remains commander `runtime`; `token-issuer` is a separate minimal Node/Alpine target and does not inherit Git, gh or Desktop Commander. Commander retains Alpine package upgrades, npm `11.21.2`, the production dependency patch and multi-stage pruning from #9. Floating LTS and Alpine repositories require periodic clean rebuilds.
+The default Dockerfile target remains commander `runtime`; `token-issuer` is a separate minimal Node/Alpine target and does not inherit Git, gh or Desktop Commander. The issuer uses Node builtins only: npm/npx, Yarn, Corepack, their vendored modules and package-manager caches are removed from its delivered filesystem. The issuer image test checks payloads and dangling shims as well as commands; commander retains its required npm tooling. Commander retains Alpine package upgrades, npm `11.21.2`, the production dependency patch and multi-stage pruning from #9. Floating LTS and Alpine repositories require periodic clean rebuilds.
 
 ### Place the PEM safely
 
