@@ -1,7 +1,38 @@
 services:
+  token-issuer:
+    image: desktopcommander-token-issuer:local
+    build:
+      context: .
+      target: token-issuer
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - github-app-key:/run/github-app-key:ro
+      - github-app-token:/run/github-app-token
+    networks: [issuer-outbound]
+    healthcheck:
+      test: ["CMD", "node", "--input-type=module", "-e", "import {readToken} from '/usr/local/lib/github-app/token-file.mjs'; try { readToken(); } catch { process.exit(1); }"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
   commander:
     build:
       context: .
+      target: runtime
+    depends_on:
+      token-issuer:
+        condition: service_healthy
     entrypoint: ["/usr/local/bin/bootstrap"]
     security_opt:
       - no-new-privileges:true
@@ -12,8 +43,7 @@ services:
         max-size: "10m"
         max-file: "3"
     environment:
-      GH_TOKEN: ${GITHUB_TOKEN}
-      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY}
+      GITHUB_REPOSITORY: ${GITHUB_REPOSITORY:-the9ball/DesktopCommanderContainer}
       GIT_USER_NAME: ${GIT_USER_NAME}
       GIT_USER_EMAIL: ${GIT_USER_EMAIL}
     volumes:
@@ -21,6 +51,7 @@ services:
       - commander-home:/root
       # cloneしたrepositoryと作業内容を永続化
       - commander-workspace:/workspace
+      - github-app-token:/run/github-app-token:ro
     stdin_open: true
     tty: true
     restart: unless-stopped
@@ -28,3 +59,10 @@ services:
 volumes:
   commander-home:
   commander-workspace:
+  github-app-token:
+  github-app-key:
+    external: true
+    name: ${GITHUB_APP_KEY_VOLUME:-desktopcommander-github-app-key}
+
+networks:
+  issuer-outbound:

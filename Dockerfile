@@ -1,3 +1,13 @@
+FROM node:lts-alpine AS token-issuer
+# Issuance uses only Node builtins; package managers and their dependency trees are unnecessary.
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/local/lib/node_modules /opt/yarn-v* \
+        /root/.npm /root/.cache/node/corepack /usr/local/share/.cache/yarn \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn \
+        /usr/local/bin/yarnpkg /usr/local/bin/corepack
+COPY auth/token-file.mjs auth/token-issuer.mjs /usr/local/lib/github-app/
+CMD ["node", "/usr/local/lib/github-app/token-issuer.mjs"]
+
 FROM node:lts-alpine AS base
 
 ENV MCP_CLIENT_DOCKER=true
@@ -28,9 +38,9 @@ RUN patch -p1 < /tmp/runtime-dependencies.patch \
     && npm ci --ignore-scripts \
     && npm rebuild @vscode/ripgrep
 
-COPY patches/pass-gh-token-to-mcp.patch /tmp/
+COPY patches/restrict-mcp-environment.patch /tmp/
 COPY patches/inherit-working-directory.patch /tmp/
-RUN patch -p1 < /tmp/pass-gh-token-to-mcp.patch \
+RUN patch -p1 < /tmp/restrict-mcp-environment.patch \
     && patch -p1 < /tmp/inherit-working-directory.patch \
     && npm run build \
     && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
@@ -42,6 +52,12 @@ COPY --from=build /usr/src/app/ ./
 
 COPY bootstrap.sh /usr/local/bin/bootstrap
 COPY container-logging.mjs /usr/local/lib/container-logging.mjs
-RUN chmod +x /usr/local/bin/bootstrap
+COPY auth/ /usr/local/lib/github-app/
+RUN chmod +x /usr/local/bin/bootstrap /usr/local/lib/github-app/gh.mjs \
+    /usr/local/lib/github-app/git.mjs /usr/local/lib/github-app/git-credential.mjs \
+    && ln -s /usr/local/lib/github-app/gh.mjs /usr/local/bin/gh \
+    && ln -s /usr/local/lib/github-app/git.mjs /usr/local/bin/git \
+    && ln -s /usr/local/lib/github-app/git-credential.mjs /usr/local/bin/git-credential-github-app \
+    && mkdir -p /usr/local/share/github-app/gh-config
 
 WORKDIR /workspace

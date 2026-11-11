@@ -5,11 +5,13 @@ import { cleanLine } from '/usr/src/app/dist/remote-device/diagnostics/device-lo
 for (const method of ['log', 'info', 'warn', 'error']) {
     const writeMessage = console[method].bind(console);
 
-    /** Format a console message, mask the current PAT, and omit private payloads. */
+    /** Mask all accepted App-token generations before applying upstream private-log filtering. */
     console[method] = function logProtectedMessage(...argumentsToLog) {
         const message = format(...argumentsToLog);
         const token = process.env.GH_TOKEN;
-        const maskedMessage = token ? message.split(token).join('<redacted>') : message;
+        const environmentMasked = token ? message.split(token).join('<redacted>') : message;
+        // Consumers accept only ghs_ tokens, so missed rotations and prior processes are covered.
+        const maskedMessage = environmentMasked.replace(/(?:ghs_|ghp_|github_pat_)[A-Za-z0-9_]+/g, '<redacted>');
         // A completion message places the private result after its first newline.
         const firstLine = maskedMessage.trimStart().split(/\r?\n/, 1)[0];
         const line = cleanLine(firstLine);
