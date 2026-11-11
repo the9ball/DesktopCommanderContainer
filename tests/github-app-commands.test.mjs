@@ -33,6 +33,7 @@ test('Git uses current generation and never stale helpers, askpass, headers or n
         for (const key of ['credential.helper', 'credential.https://github.com.helper']) {
             assert.equal(command('/usr/bin/git', ['config', '--global', '--add', key, helper], { env: environment }).status, 0);
         }
+        assert.equal(command('/usr/bin/git', ['config', '--global', 'core.askPass', helper], { env: environment }).status, 0);
         for (const generation of ['FIRST', 'SECOND']) {
             publish(generation);
             const result = command('/usr/local/bin/git', ['credential', 'fill'], { env: environment, input });
@@ -41,6 +42,13 @@ test('Git uses current generation and never stale helpers, askpass, headers or n
             assert.equal(result.stdout.includes('SYNTHETIC_OLD_PAT'), false);
             assert.equal(existsSync(marker), false);
         }
+        const controlled = command('/usr/local/bin/git', ['-c', `credential.helper=${helper}`,
+            '-c', 'credential.https://github.com.helper=!"gh" auth git-credential',
+            '--config-env=core.askPass=ISSUE10_ASKPASS', 'credential', 'fill'], {
+            env: { ...environment, ISSUE10_ASKPASS: helper }, input });
+        assert.equal(controlled.status, 0);
+        assert.equal(controlled.stdout.includes('password=ghs_SYNTHETIC_SECOND'), true);
+        assert.equal(existsSync(marker), false);
         publish('EXPIRED', Date.now() - 1000);
         const expired = command('/usr/local/bin/git', ['credential', 'fill'], { env: environment, input });
         assert.notEqual(expired.status, 0);
@@ -154,17 +162,17 @@ test('Git global options preserve directory order and configuration precedence',
         assert.equal(command('/usr/bin/git', ['init', repository], { env }).status, 0);
         assert.equal(command('/usr/bin/git', ['init', '--bare', bare], { env }).status, 0);
         for (const location of [repository, bare]) {
-            assert.equal(command('/usr/bin/git', ['-C', location, 'config', 'issue10.probe', 'repository-value'], { env }).status, 0);
+            assert.equal(command('/usr/bin/git', ['-C', location, 'config', 'user.name', 'repository-value'], { env }).status, 0);
         }
         const contexts = [
             ['--no-optional-locks', '-C', repository],
             ['-C', home, '--no-optional-locks', '-C', 'repository'],
             ['-C', home, '-C', '', '--no-pager', '-C', 'repository'],
-            ['-c', 'issue10.probe=first', '-C', repository, '--no-advice', '-c', 'issue10.probe=last'],
+            ['-c', 'user.name=first', '-C', repository, '--no-advice', '-c', 'user.name=last'],
             ['--git-dir', join(repository, '.git'), '--work-tree', repository, '--no-optional-locks'],
             ['--git-dir=.git', '--work-tree=.', '--no-optional-locks', '-C', repository],
-            ['--namespace', 'fixture', '--config-env', 'issue10.probe=ISSUE10_PROBE', '-C', repository],
-            ['-C', repository, '--config-env=issue10.probe=ISSUE10_PROBE', '--namespace=fixture'],
+            ['--namespace', 'fixture', '--config-env', 'user.name=ISSUE10_PROBE', '-C', repository],
+            ['-C', repository, '--config-env=user.name=ISSUE10_PROBE', '--namespace=fixture'],
             ['-C', repository, '--attr-source', 'HEAD'],
             ['--attr-source=HEAD', '-C', repository],
             ['-C', bare, '--bare', '--no-optional-locks'],
@@ -175,7 +183,7 @@ test('Git global options preserve directory order and configuration precedence',
             contexts.push([flag, '-C', repository, '--no-optional-locks']);
         }
         for (const context of contexts) {
-            const argumentsToGit = [...context, 'config', '--get', 'issue10.probe'];
+            const argumentsToGit = [...context, 'config', '--get', 'user.name'];
             const actual = command('/usr/bin/git', argumentsToGit, { env });
             const wrapped = command('/usr/local/bin/git', argumentsToGit, { env });
             assert.equal(actual.status, 0, 'Reference Git must accept the supported context');
@@ -203,7 +211,7 @@ test('global flag ordering cannot bypass repository and command-line credential 
     const contexts = [
         ['--no-optional-locks', '-C', repository],
         ['-C', repository, '--no-optional-locks'],
-        ['-c', 'issue10.probe=first', '--no-optional-locks', '-C', repository, '-c', 'issue10.probe=last'],
+        ['-c', 'user.name=first', '--no-optional-locks', '-C', repository, '-c', 'user.name=last'],
         ['-C', home, '--no-pager', '-C', '', '--no-optional-locks', '-C', 'repository'],
         ['--git-dir', join(repository, '.git'), '--no-optional-locks', '--work-tree', repository],
         ['--no-optional-locks', '--git-dir=.git', '--work-tree=.', '-C', repository],
@@ -247,7 +255,7 @@ test('unsupported global grammar, missing operands and configured aliases fail c
         assert.equal(command('/usr/bin/git', ['init', home], { env }).status, 0);
         for (const prefix of [
             ['--future-option'], ['--exec-path=/tmp/SYNTHETIC_OPTION_PAT'], ['--shallow-file', '/tmp/unused'],
-            ['--'], ['-Cattached'], ['-cissue10.probe=attached'],
+            ['--'], ['-Cattached'], ['-cuser.name=attached'],
         ]) {
             const result = command('/usr/local/bin/git', [...prefix, '--no-optional-locks', '-C', home, 'push'], { env });
             assert.equal(result.status, 1);
@@ -265,5 +273,148 @@ test('unsupported global grammar, missing operands and configured aliases fail c
         assert.equal(alias.status, 1);
         assert.match(alias.stderr, /Unsupported Git authentication configuration/);
         assert.equal(alias.stderr.includes('SYNTHETIC_OPTION_PAT'), false);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+/** Exercise global versus clone-local config forms; only benign command-supplied namespaces are allowed. */
+test('global and clone settings reject authentication and indirect configuration injection', () => {
+    const home = mkdtempSync(join(tmpdir(), 'github-app-clone-policy-'));
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home,
+        ISSUE10_CONFIG: 'SYNTHETIC_CLONE_SETTING' };
+    const source = `https://github.com/${identity.repository}.git`;
+    const target = join(home, 'clone');
+    const keys = ['http.extraHeader', 'http.https://github.com/.extraHeader', 'credential.helper',
+        'credential.https://github.com.helper', 'core.askPass', 'core.sshCommand', 'include.path',
+        'includeIf.gitdir:/tmp/.path', 'init.templateDir', 'remote.origin.url',
+        'url.https://example.com/.insteadOf', 'http.sslCert', 'protocol.ext.allow'];
+    /** Require policy refusal before creating the target or starting any transport. */
+    function refused(argumentsToGit, expected = /Unsupported Git authentication configuration/) {
+        const result = command('/usr/local/bin/git', argumentsToGit, { env });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, expected);
+        assert.equal((result.stdout + result.stderr).includes('SYNTHETIC_CLONE_SETTING'), false);
+        assert.equal(existsSync(target), false);
+    }
+    try {
+        for (const state of ['missing', 'expired', 'valid']) {
+            if (state === 'missing') rmSync('/run/github-app-token/token.json', { force: true });
+            else publish('CLONE_POLICY', state === 'expired' ? Date.now() - 1000 : Date.now() + 3600000);
+            for (const key of keys) {
+                const setting = `${key}=SYNTHETIC_CLONE_SETTING`;
+                const managed = key === 'core.askPass' || key.startsWith('credential.');
+                if (!managed) refused(['-c', setting, 'clone', source, target]);
+                refused(['clone', '-c', setting, source, target]);
+                refused(['clone', `-c${setting}`, source, target]);
+                refused(['clone', '--config', setting, source, target]);
+                refused(['clone', source, `--config=${setting}`, target]);
+                if (!managed) refused([`--config-env=${key}=ISSUE10_CONFIG`, 'clone', source, target]);
+            }
+        }
+        for (const argumentsToGit of [
+            ['--config', 'user.name=synthetic', 'clone', source, target],
+            ['clone', '--conf=http.extraHeader=SYNTHETIC_CLONE_SETTING', source, target],
+            ['clone', '-qc', 'http.extraHeader=SYNTHETIC_CLONE_SETTING', source, target],
+            ['clone', '--config-env=http.extraHeader=ISSUE10_CONFIG', source, target],
+            ['clone', '--template=/tmp/unreviewed', source, target],
+            ['clone', '--separate-git-dir=/tmp/unreviewed', source, target],
+            ['clone', '--recurse-submodules', source, target],
+            ['clone', source, target, '--config'],
+        ]) refused(argumentsToGit, /Unsupported Git (global|clone) options/);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+/** Check actual object transfer and benign config persistence against local disposable repositories. */
+test('normal clone fetch and push work with safe config and renewed synthetic App files', () => {
+    const home = mkdtempSync(join(tmpdir(), 'github-app-roundtrip-'));
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home,
+        GIT_AUTHOR_NAME: 'Synthetic Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
+        GIT_COMMITTER_NAME: 'Synthetic Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
+    const origin = join(home, 'origin.git');
+    const seed = join(home, 'seed');
+    const clone = join(home, 'clone');
+    const helperMarker = join(home, 'caller-helper-ran');
+    /** Require a successful local Git operation without including captured output in assertion failures. */
+    function run(executable, argumentsToGit) {
+        const result = command(executable, argumentsToGit, { env });
+        assert.equal(result.status, 0, 'Local Git fixture operation must succeed');
+        return result.stdout.trim();
+    }
+    try {
+        run('/usr/bin/git', ['init', '--bare', origin]);
+        run('/usr/bin/git', ['init', '--initial-branch=main', seed]);
+        writeFileSync(join(seed, 'marker.txt'), 'first\n');
+        run('/usr/bin/git', ['-C', seed, 'add', 'marker.txt']);
+        run('/usr/bin/git', ['-C', seed, 'commit', '-m', 'Synthetic initial fixture']);
+        run('/usr/bin/git', ['-C', seed, 'push', origin, 'main']);
+        run('/usr/bin/git', ['-C', origin, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
+        publish('ROUNDTRIP_FIRST');
+        run('/usr/local/bin/git', ['--no-optional-locks', '-c', `credential.helper=!touch '${helperMarker}'`,
+            '-c', 'credential.https://github.com.helper=!"gh" auth git-credential',
+            '-c', 'user.name=command-name', 'clone',
+            '-cuser.name=local-name', '--config', 'core.eol=lf', '--branch=main', origin, clone]);
+        assert.equal(run('/usr/bin/git', ['-C', clone, 'config', '--local', '--get', 'user.name']), 'local-name');
+        assert.equal(readFileSync(join(clone, 'marker.txt'), 'utf8'), 'first\n');
+        assert.equal(existsSync(helperMarker), false);
+        writeFileSync(join(seed, 'marker.txt'), 'second\n');
+        run('/usr/bin/git', ['-C', seed, 'commit', '-am', 'Synthetic upstream fixture']);
+        run('/usr/bin/git', ['-C', seed, 'push', origin, 'main']);
+        publish('ROUNDTRIP_SECOND');
+        run('/usr/local/bin/git', ['--no-optional-locks', '-C', clone, 'fetch', 'origin', 'main']);
+        assert.equal(run('/usr/bin/git', ['-C', clone, 'rev-parse', 'FETCH_HEAD']),
+            run('/usr/bin/git', ['-C', origin, 'rev-parse', 'refs/heads/main']));
+        writeFileSync(join(clone, 'push-marker.txt'), 'local push\n');
+        run('/usr/local/bin/git', ['-C', clone, 'add', 'push-marker.txt']);
+        run('/usr/local/bin/git', ['-C', clone, 'commit', '-m', 'Synthetic outgoing fixture']);
+        run('/usr/local/bin/git', ['-C', clone, 'push', 'origin', 'HEAD:refs/heads/fixture']);
+        assert.equal(run('/usr/bin/git', ['-C', origin, 'rev-parse', 'refs/heads/fixture']),
+            run('/usr/bin/git', ['-C', clone, 'rev-parse', 'HEAD']));
+        const shallow = join(home, 'shallow');
+        run('/usr/local/bin/git', ['clone', `file://${origin}`, '--depth', '1', '--single-branch', shallow]);
+        assert.equal(run('/usr/bin/git', ['-C', shallow, 'rev-parse', '--is-shallow-repository']), 'true');
+        for (const state of ['missing', 'expired']) {
+            if (state === 'missing') rmSync('/run/github-app-token/token.json');
+            else publish('EXPIRED_ROUNDTRIP', Date.now() - 1000);
+            for (const argumentsToGit of [['clone', origin, join(home, state)],
+                ['-C', clone, 'fetch', 'origin'], ['-C', clone, 'push', 'origin', 'HEAD:refs/heads/never-written']]) {
+                const result = command('/usr/local/bin/git', argumentsToGit, { env });
+                assert.equal(result.status, 1);
+                assert.match(result.stderr, /GitHub App credential unavailable/);
+            }
+        }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+/** Isolate future clone config from conditional global includes, templates and ambient Git control variables. */
+test('clone cannot activate unseen global includes or template and environment authentication', () => {
+    const home = mkdtempSync(join(tmpdir(), 'github-app-hidden-config-'));
+    const source = join(home, 'source.git');
+    const target = join(home, 'clone');
+    const template = join(home, 'template');
+    const injected = join(home, 'injected.config');
+    const marker = join(home, 'helper-ran');
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home };
+    try {
+        assert.equal(command('/usr/bin/git', ['init', '--bare', source], { env }).status, 0);
+        mkdirSync(template);
+        writeFileSync(injected, '[http]\n    extraHeader = Authorization: Basic SYNTHETIC_HIDDEN_CONFIG\n');
+        writeFileSync(join(template, 'config'), readFileSync(injected));
+        writeFileSync(join(home, '.gitconfig'), `[includeIf "gitdir:${target}/"]\n    path = ${injected}\n[init]\n    templateDir = ${template}\n`);
+        const helper = join(home, 'helper');
+        writeFileSync(helper, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o700 });
+        publish('HIDDEN_CONFIG');
+        const result = command('/usr/local/bin/git', ['clone', source, target], { env: { ...env,
+            GIT_CONFIG_GLOBAL: injected, GIT_CONFIG_SYSTEM: injected, GIT_CONFIG_COUNT: '1',
+            GIT_CONFIG_KEY_0: 'http.extraHeader', GIT_CONFIG_VALUE_0: 'SYNTHETIC_HIDDEN_CONFIG',
+            GIT_TEMPLATE_DIR: template, GIT_EXEC_PATH: '/nonexistent', GIT_ASKPASS: helper,
+            GIT_PROXY_COMMAND: helper, GIT_SSH_COMMAND: helper } });
+        assert.equal(result.status, 0, 'Clone must use its isolated settings');
+        const local = command('/usr/bin/git', ['-C', target, 'config', '--local', '--get', 'http.extraHeader'], { env });
+        assert.equal(local.status, 1);
+        assert.equal(existsSync(marker), false);
+        assert.equal((result.stdout + result.stderr).includes('SYNTHETIC_HIDDEN_CONFIG'), false);
+        // A dash-leading destination after -- remains a literal path, not a forbidden config option.
+        const literal = command('/usr/local/bin/git', ['clone', '--', source, '--config=http.extraHeader=literal'], { env, cwd: home });
+        assert.equal(literal.status, 0);
+        assert.equal(existsSync(join(home, '--config=http.extraHeader=literal/.git')), true);
     } finally { rmSync(home, { recursive: true, force: true }); }
 });
