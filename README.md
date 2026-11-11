@@ -21,7 +21,7 @@ The issuer renews approximately 10–11 minutes before expiry, with bounded expo
 
 Proactive renewal keeps a usable token while idle. On-demand issuance could avoid that exposure, but would require additional request IPC and authentication/concurrency handling instead of a read-only consumer. This deployment chooses proactive renewal.
 
-`gh` reads the current file on every invocation and sets `GH_TOKEN` only in its child process. Its isolated configuration directory prevents use of saved PATs. Git HTTPS uses a dedicated helper on every authentication request, restricted to the exact HTTPS host and repository path. Its wrapper resets helper chains, removes credential/tracing environment overrides, disables prompts, and refuses HTTP extraHeaders, cookie files and `.netrc` rather than silently using them. Existing saved credentials are not deleted. Repository-specific Git configuration is checked even with `git -C`.
+`gh` reads the current file on every invocation and sets `GH_TOKEN` only in its child process. Its isolated configuration directory prevents use of saved PATs. Git HTTPS uses a dedicated helper on every authentication request, restricted to the exact HTTPS host and repository path. Its wrapper resets helper chains, removes credential/tracing environment overrides, disables prompts, and refuses URL-embedded credentials, all URL rewrites, HTTP extraHeaders, cookie files and `.netrc` rather than silently using them. Network subcommands also require a valid App file before Git starts. Existing saved credentials are not deleted. Repository-specific Git configuration is checked even with `git -C`.
 
 The Remote Device and MCP receive no long-lived token environment variable. `patches/restrict-mcp-environment.patch` limits the MCP environment to SDK defaults; `patches/inherit-working-directory.patch` retains the cloned working directory. `/usr/local/bin` wrappers and fixed credential paths work within that restricted environment.
 
@@ -85,7 +85,7 @@ docker compose -p commander-app up -d
 docker compose -p commander-app ps
 docker compose -p commander-app logs --tail=30 token-issuer
 docker compose -p commander-app exec -T commander gh api repos/the9ball/DesktopCommanderContainer --silent
-docker compose -p commander-app exec -T commander git status
+docker compose -p commander-app exec -T commander git -C /workspace/DesktopCommanderContainer status
 ```
 
 `depends_on` waits for a healthy issuer on first startup; bootstrap also waits up to one minute for a usable token, configures Git commit identity, clones if absent, then starts Remote Device in `/workspace/DesktopCommanderContainer`. Re-authorize the new Remote Device through its normal startup guidance. Sign-in URLs/codes remain sensitive.
@@ -98,7 +98,7 @@ For key rotation, generate a second App key through GitHub while retaining the f
 
 On `refresh-failed`, inspect issuer health and fixed event logs, network reachability, system clock, volume ownership/modes, App installation/suspension and grants. Do not print credential files. The issuer retries after network/API recovery, including after token expiry; restart it only to apply an image/configuration change, not to exchange tokens. Never resolve a failure by restoring PAT environment variables or adding credential helpers. A changed App grant requires explicit review, not automatic privilege adoption.
 
-If Git reports unsupported HTTP authentication configuration, review the matching repository's extraHeader/cookie settings and home `.netrc` locally, without printing values to shared logs. Removing existing credentials/configuration requires the operator's approval. If gh fails, use `gh api repos/the9ball/DesktopCommanderContainer --silent` as the repository-scoped probe; do not use `/user` as an installation-token health check.
+If Git reports unsupported authentication configuration, review argument and remote/push URLs, URL rewrites, the matching repository's extraHeader/cookie settings and home `.netrc` locally, without printing values to shared logs. URL rewrites are unsupported even when they contain no visible credential: a rewrite can assemble userinfo from separate fragments. Removing existing credentials/configuration requires the operator's approval. If gh fails, use `gh api repos/the9ball/DesktopCommanderContainer --silent` as the repository-scoped probe; do not use `/user` as an installation-token health check.
 
 Before any real test writes, explain the exact test branch, harmless marker file, test Issue and draft PR. Use only the authorized repository, record IDs, and close/remove only explicitly covered test objects. Never directly push the default branch, force push or merge. A public clone alone does not prove authentication; successful authorized writes and installation API checks are required.
 

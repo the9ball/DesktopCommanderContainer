@@ -109,3 +109,37 @@ test('gh passes only the latest token to its child without changing saved creden
         renameSync('/usr/bin/gh.test-original', '/usr/bin/gh');
     }
 });
+
+/** Credential-bearing URLs and rewrites must fail locally before Git can bypass its helper. */
+test('Git rejects argument, remote, push URL credentials and split URL rewrites', () => {
+    const home = mkdtempSync(join(tmpdir(), 'github-app-url-'));
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home };
+    const repository = join(home, 'repository');
+    const credentialUrl = `https://x-access-token:SYNTHETIC_URL_PAT@github.com/${identity.repository}.git`;
+    /** Assert a fixed local policy failure and no credential values in diagnostics. */
+    function denied(argumentsToGit) {
+        const result = command('/usr/local/bin/git', argumentsToGit, { env });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /Unsupported Git authentication configuration/);
+        assert.equal((result.stdout + result.stderr).includes('SYNTHETIC_URL_PAT'), false);
+    }
+    try {
+        assert.equal(command('/usr/bin/git', ['init', repository], { env }).status, 0);
+        for (const state of ['missing', 'expired', 'valid']) {
+            if (state === 'missing') rmSync('/run/github-app-token/token.json', { force: true });
+            else publish('URL_TEST', state === 'expired' ? Date.now() - 1000 : Date.now() + 3600000);
+            denied(['clone', credentialUrl, join(home, 'clone')]);
+            for (const key of ['remote.origin.url', 'remote.origin.pushurl']) {
+                assert.equal(command('/usr/bin/git', ['-C', repository, 'config', key, credentialUrl], { env }).status, 0);
+                denied(['-C', repository, 'push', 'origin', 'HEAD']);
+                assert.equal(command('/usr/bin/git', ['-C', repository, 'config', '--unset', key], { env }).status, 0);
+            }
+            for (const kind of ['insteadOf', 'pushInsteadOf']) {
+                const key = `url.https://x-access-token:.${kind}`;
+                assert.equal(command('/usr/bin/git', ['-C', repository, 'config', key, 'issue10:'], { env }).status, 0);
+                denied(['-C', repository, 'push', `issue10:SYNTHETIC_URL_PAT@github.com/${identity.repository}.git`]);
+                assert.equal(command('/usr/bin/git', ['-C', repository, 'config', '--unset', key], { env }).status, 0);
+            }
+        }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+});
