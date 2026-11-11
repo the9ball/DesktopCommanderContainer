@@ -1,600 +1,141 @@
 # DesktopCommanderContainer
 
-Run [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device inside an isolated Docker container.
+Run [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device in Docker. GitHub operations use the `the9ball-git-agent` GitHub App, with automatically renewed Installation Access Tokens. The upstream submodule remains pinned to **v0.3.0**, commit `67694caa7f54ee2ca70d455ed730be231ed3fbfc`.
 
-This repository provides a containerized development environment that ChatGPT can access through Remote Desktop Commander while keeping the host filesystem, Docker socket, SSH keys, and host Git credentials outside the container.
-
-## Architecture
+## Authentication architecture
 
 ```text
-ChatGPT
-    │
-    │ Remote Desktop Commander
-    ▼
-Docker container
-    │
-    ├── Desktop Commander MCP
-    ├── git
-    ├── gh
-    │
-    └── /workspace
-          └── <repository>
-                │
-                ▼
-              GitHub
+key named volume ──read only──> token-issuer ──write──> token named volume
+                                   │                         │ read only
+                                   ▼                         ▼
+                              GitHub API                 commander
+                                                           ├─ gh wrapper → gh
+                                                           └─ Git wrapper → credential helper
 ```
 
-Desktop Commander is included as a Git submodule and built inside the image.
+The issuer alone mounts `/run/github-app-key/app.pem`. Commander mounts the token volume at `/run/github-app-token` read only, alongside its existing `/root` and `/workspace` volumes. There are no host bind mounts, Docker sockets, host SSH keys, published issuer ports, or shared issuer/commander networks. Both containers drop all capabilities and prevent privilege escalation. The issuer also uses a read-only root filesystem and a bounded `/tmp` tmpfs. Both currently run as root; nonroot migration is tracked in #11.
 
-The pinned version is **v0.3.0** (67694caa7f54ee2ca70d455ed730be231ed3fbfc).
-The container patches retain the restricted MCP environment (GH_TOKEN plus the SDK defaults) and the repository working directory.
+The App identity is deliberately fixed in `auth/token-file.mjs`: App ID `5706210`, Installation ID `180730871`, repository **the9ball/DesktopCommanderContainer**. It has Contents, Issues and Pull requests write permissions and Metadata read. No user OAuth or webhooks are needed. Issuance checks the App and repository installation API responses, explicitly requests that repository and those permissions, and verifies the resulting scope. New permissions or repositories do not silently propagate.
 
-```text
-DesktopCommanderContainer/
-├── DesktopCommanderMCP/
-├── patches/
-│   ├── pass-gh-token-to-mcp.patch
-│   ├── inherit-working-directory.patch
-│   └── runtime-dependencies.patch
-├── Dockerfile
-├── compose.yaml
-├── bootstrap.sh
-├── .env.example
-└── .gitmodules
-```
+The issuer renews approximately 10–11 minutes before expiry, with bounded exponential retry, jitter, HTTP deadlines and bounded Retry-After. It writes one protected JSON document using an exclusive temporary file, fsync and atomic rename. Readers accept only root-owned regular files with mode `0600` in a root-owned `0700` directory, matching scope and at least 60 seconds remaining. A failed refresh preserves the previous generation until its usable lifetime ends; missing, malformed or expired credentials fail locally. After recovery, later commands work without container restart or manual token replacement.
 
-## Security Model
+Proactive renewal keeps a usable token while idle. On-demand issuance could avoid that exposure, but would require additional request IPC and authentication/concurrency handling instead of a read-only consumer. This deployment chooses proactive renewal.
 
-The container is intentionally isolated from the host.
+`gh` reads the current file on every invocation and sets `GH_TOKEN` only in its child process. Its isolated configuration directory prevents use of saved PATs. Git HTTPS uses a dedicated helper on every authentication request, restricted to the exact HTTPS host and repository path. Its wrapper resets helper chains, removes credential/tracing environment overrides, disables prompts, and refuses HTTP extraHeaders, cookie files and `.netrc` rather than silently using them. Existing saved credentials are not deleted. Repository-specific Git configuration is checked even with `git -C`.
 
-It does not require:
+The Remote Device and MCP receive no long-lived token environment variable. `patches/restrict-mcp-environment.patch` limits the MCP environment to SDK defaults; `patches/inherit-working-directory.patch` retains the cloned working directory. `/usr/local/bin` wrappers and fixed credential paths work within that restricted environment.
 
-* host filesystem bind mounts
-* `/var/run/docker.sock`
-* host SSH keys
-* host Git credentials
+## Trust boundary and command limitations
 
-The repository being worked on is cloned inside `/workspace`, which is backed by a Docker named volume.
+Commands controlling commander can read the short-lived token. Host administrators and the Docker daemon can read volumes, process environments and keys. The issuer is a separate trust boundary, not a defense against a compromised daemon. Keep its key volume out of backups and other containers. There is no firewall egress allowlist; the issuer code addresses only `api.github.com` over HTTPS and rejects redirects.
 
-Desktop Commander's own state is stored under `/root`, also backed by a named volume.
+The console filter masks every `ghs_` generation accepted by the reader, including previous generations and missed rotations, and retains the existing tool-payload/debug filtering. Issuer errors use fixed event names without API bodies, headers, JWTs or parser diagnostics. This does not protect intentional secret printing, arbitrary child stdout/stderr, direct stream writes, telemetry or files. Do not run `env`, `printenv`, `set -x`, `gh auth token`, HTTP tracing, unfiltered `docker inspect` or interpolated `docker compose config` in recorded diagnostics. Use `docker compose config --quiet`.
 
-GitHub access is provided through `GH_TOKEN`. Use a fine-grained personal access token restricted to only the repositories and permissions required for the intended workflow.
+A running stock gh process retains its initial token. A long-running watch can fail after expiry; rerun that command. New invocations use the renewed token. Writes are never automatically replayed after ambiguous failure. Installation tokens normally last one hour; changing an environment variable on container startup does not implement rotation.
 
-The token is intentionally available to Desktop Commander commands inside the container. Treat the container as part of the token's trust boundary.
+Use explicit repository, base/head, title and body options for noninteractive Issue/PR operations. REST API compatibility does not establish every GraphQL query or gh flag. User endpoints (`gh api user`), `@me`, user-wide status, Projects, Gists, organization management, Actions/checks and workflow-file changes are outside the supported permission scope. Do not expand App permissions automatically. In particular, App push tests must use ordinary files, not `.github/workflows`. Git identity is commit metadata; GitHub API actions are attributed to the App bot. Repository rules and branch protection still apply.
 
-## Requirements
+## Initial setup
 
-* Docker
-* Docker Compose
-* Git
-* a GitHub personal access token
-
-Clone this repository including its submodule:
+Requirements: Docker with Compose, Git, the registered/installed App, and its PEM held securely by the operator. Clone with submodules:
 
 ```sh
 git clone --recurse-submodules https://github.com/the9ball/DesktopCommanderContainer.git
 cd DesktopCommanderContainer
-```
-
-If the repository was cloned without submodules:
-
-```sh
-git submodule update --init --recursive
-```
-
-## Configuration
-
-Copy the example environment file:
-
-```sh
 cp .env.example .env
 ```
 
-Configure the following values:
+Set `GIT_USER_NAME` and `GIT_USER_EMAIL` in `.env`. Keep `GITHUB_REPOSITORY=the9ball/DesktopCommanderContainer`; other repositories fail startup. `GITHUB_APP_KEY_VOLUME` names an external key volume (default `desktopcommander-github-app-key`). No PAT variable is required. `.env` and private-key files are excluded from Git; the Docker build allowlist also excludes private keys and credentials. Never put secrets in allowed source files or manifests.
 
-```dotenv
-GITHUB_TOKEN=
-GITHUB_REPOSITORY=
-GIT_USER_NAME=
-GIT_USER_EMAIL=
-```
-
-For example, `GITHUB_REPOSITORY` should be a GitHub repository URL accepted by `gh repo clone`.
-
-The Compose configuration maps:
-
-```text
-GITHUB_TOKEN
-    ↓
-GH_TOKEN
-```
-
-inside the container.
-
-`.env` and other `.env.*` files are ignored by Git, while `.env.example` remains tracked.
-
-## Build
-
-Build the image with:
+Build both services before key placement. Build steps require no runtime credentials:
 
 ```sh
-docker compose build
+docker compose --env-file .env.example config --quiet
+docker compose build --pull
 ```
 
-The Docker build:
+The default Dockerfile target remains commander `runtime`; `token-issuer` is a separate minimal Node/Alpine target and does not inherit Git, gh or Desktop Commander. Commander retains Alpine package upgrades, npm `11.21.2`, the production dependency patch and multi-stage pruning from #9. Floating LTS and Alpine repositories require periodic clean rebuilds.
 
-1. upgrades Alpine packages, installs the required tools and pins npm to `11.21.2`
-2. copies the submodule source into a build stage and applies the runtime dependency lock patch
-3. installs locked Node dependencies with `npm ci` and deliberately rebuilds `@vscode/ripgrep`
-4. applies the local `GH_TOKEN` forwarding and working-directory patches, then builds Desktop Commander and its browser UIs
-5. prunes development dependencies with lifecycle scripts disabled
-6. copies the built, pruned application into a runtime stage descended directly from the base, then installs the bootstrap and protected logging preload
+### Place the PEM safely
 
-The runtime dependency patch updates `body-parser` to `2.4.0`, `markdown-it` to `14.3.3`, and its required `qs` resolution to `6.17.1`. It preserves the pinned submodule and all other lock entries. The final image retains the application source, `dist`, manifests and vendored package layout, but excludes installed development tools such as `nexe`, `decompress` and `node-forge`. Development dependencies can still exist in the disposable build stage and local build cache; the runtime stage does not inherit those layers. The separately bundled npm is updated within major version 11, and its download cache is cleaned in the same build step.
-
-To force a clean rebuild:
+Do this locally, never through a chat attachment, command string containing key bytes, environment variable or Docker build. The following POSIX-shell commands create only the dedicated key volume and a network-disabled import container. Replace `/secure/path/app.pem` with your existing protected file path. In PowerShell, the same Docker commands work with a quoted Windows source path and without POSIX line-continuation backslashes.
 
 ```sh
-docker compose build --pull --no-cache
+docker volume create desktopcommander-github-app-key
+docker create --name commander-key-import --network none --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --mount type=volume,src=desktopcommander-github-app-key,dst=/key \
+    --entrypoint sh desktopcommander-token-issuer:local -c \
+    'test ! -e /key/app.pem && chmod 0700 /key && chmod 0600 /key/app.pem.new && node /usr/local/lib/github-app/token-issuer.mjs --check-key /key/app.pem.new && mv /key/app.pem.new /key/app.pem'
+docker cp /secure/path/app.pem commander-key-import:/key/app.pem.new
+docker start --attach commander-key-import
+docker inspect --format '{{.State.ExitCode}}' commander-key-import
 ```
 
-### Alpine package updates and TLS verification
+Require exit code `0` before removing the importer with `docker rm commander-key-import`. The resulting key is uid/gid `0:0`, file `0600`, directory `0700`. This validates an RSA key of at least 2048 bits before publishing it. It does not prove that GitHub accepts that key. A failed import keeps any existing `app.pem`; inspect only fixed error/status messages, and correct the local file/permissions before retrying. Never delete the key volume as troubleshooting. If you configured another volume name, use that name consistently in both import and Compose.
 
-The Dockerfile runs `apk upgrade --no-cache` before `apk add --no-cache` in the same build step. This upgrades all installed Alpine packages, including the CA bundle and OpenSSL libraries, from the configured repositories before installing tools. `apk add --no-cache` alone can retain installed packages when dependency constraints are satisfied. Alpine continues to maintain the trust store; certificates are not removed individually.
+The agent stops before live tests and waits for you to perform this operation. It never requests the PEM contents.
 
-In the Alpine 3.24.2 image, upgrading the bundle from `20260909-r0` to `20261020-r0` changed curl's result for the eMudhra test endpoint from success to certificate rejection (exit code 60, `unable to get local issuer certificate (20)`). Updating OpenSSL or other packages was not needed to reproduce this fix.
+### Start and validate
 
-For a manual regression check, build a separate image without reusing build layers, check for remaining package updates against fresh indexes, and run bounded HTTPS checks:
+Use a separate Compose project with fresh home/workspace/token volumes for initial acceptance. Do not recreate an existing deployment with a repository outside the App installation scope, or change its repository silently.
 
 ```sh
-docker build --pull --no-cache -t desktopcommandercontainer:ca-check .
-docker run --rm --entrypoint sh desktopcommandercontainer:ca-check -c '
-    set -eu
-    apk update
-    upgradable_packages=$(apk list --upgradable)
-    if [ -n "$upgradable_packages" ]; then
-        printf "%s\n" "$upgradable_packages" >&2
-        exit 1
-    fi
-    apk list --installed ca-certificates-bundle
-    curl --noproxy "*" --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-        --output /dev/null https://example.com/
-    status=0
-    curl --noproxy "*" --silent --show-error --connect-timeout 10 --max-time 30 \
-        --output /dev/null https://dv-g3b-emudhra.we-have-a-problem.com/ \
-        2>/tmp/ca-check-error || status=$?
-    cat /tmp/ca-check-error
-    if [ "$status" -ne 60 ]; then
-        echo "Expected certificate verification exit code 60; got $status" >&2
-        exit 1
-    fi
-    if ! grep -Fq "unable to get local issuer certificate (20)" /tmp/ca-check-error; then
-        echo "Unexpected certificate failure; inspect the endpoint and certificate chain" >&2
-        exit 1
-    fi
-    echo "CA regression check passed"
-'
+docker compose -p commander-app up -d
+docker compose -p commander-app ps
+docker compose -p commander-app logs --tail=30 token-issuer
+docker compose -p commander-app exec -T commander gh api repos/the9ball/DesktopCommanderContainer --silent
+docker compose -p commander-app exec -T commander git status
 ```
 
-DNS failures, connection failures, and timeouts do not pass this check. These external endpoints can change or become unavailable; any unexpected result needs investigation of the endpoint, certificate chain, and network before attributing it to the image. Direct HTTPS access is required; a TLS-intercepting proxy can invalidate the result. This is an opt-in check rather than a build-time dependency.
+`depends_on` waits for a healthy issuer on first startup; bootstrap also waits up to one minute for a usable token, configures Git commit identity, clones if absent, then starts Remote Device in `/workspace/DesktopCommanderContainer`. Re-authorize the new Remote Device through its normal startup guidance. Sign-in URLs/codes remain sensitive.
 
-`--pull` refreshes the floating `node:lts-alpine` base, and `--no-cache` forces the package step to run again. Rebuild and recreate deployed containers to receive package updates; existing images and running containers do not update automatically. The selected Alpine repositories must provide the corrected bundle (`20261020-r0` or later). Package versions can change as the base and repositories advance, and updates published after a build may appear in the verification check.
+The four volumes are commander home, workspace, token and the external key volume. Preserve existing home/workspace data and never use `down -v` against a deployment. Root's Git config and Remote Device state remain in the home volume; repositories and edits remain in workspace. No stored PAT is erased as part of this migration.
 
-## Start
+## Rotation, recovery and rollout
 
-Start the container:
+For key rotation, generate a second App key through GitHub while retaining the first. Use a fresh network-disabled importer as above to copy and validate `app.pem.new`. On that importer only, preserve the current `app.pem` as `app.pem.previous` before atomically renaming the validated new file. Stop if that backup already exists; do not overwrite or delete a prior key automatically. The issuer rereads the PEM at each refresh. Verify successful issuance and Git/gh operations with the replacement before separately authorizing old-key revocation or deletion. The directory remains `0700`, all key files `0600`; a validation or rename failure leaves the active key intact.
+
+On `refresh-failed`, inspect issuer health and fixed event logs, network reachability, system clock, volume ownership/modes, App installation/suspension and grants. Do not print credential files. The issuer retries after network/API recovery, including after token expiry; restart it only to apply an image/configuration change, not to exchange tokens. Never resolve a failure by restoring PAT environment variables or adding credential helpers. A changed App grant requires explicit review, not automatic privilege adoption.
+
+If Git reports unsupported HTTP authentication configuration, review the matching repository's extraHeader/cookie settings and home `.netrc` locally, without printing values to shared logs. Removing existing credentials/configuration requires the operator's approval. If gh fails, use `gh api repos/the9ball/DesktopCommanderContainer --silent` as the repository-scoped probe; do not use `/user` as an installation-token health check.
+
+Before any real test writes, explain the exact test branch, harmless marker file, test Issue and draft PR. Use only the authorized repository, record IDs, and close/remove only explicitly covered test objects. Never directly push the default branch, force push or merge. A public clone alone does not prove authentication; successful authorized writes and installation API checks are required.
+
+Keep the existing PAT and original deployment until App identity/scope checks, Git clone/push, high-level Issue/PR operations, recovery tests and a real >1-hour expiry/renewal test succeed without manual token exchange or container restart. Record final review and obtain explicit operator approval before production switching or PAT revocation. Rollback means restoring the separately retained deployment/configuration under that approval, not an automatic runtime fallback.
+
+## Tests and security checks
+
+All automated fixtures are synthetic and need no App key or PAT. Run suites only in disposable containers; command tests temporarily replace gh inside that disposable filesystem to inspect hashed environment values, then restore it. Never run them inside a production container.
 
 ```sh
-docker compose up -d
+docker build --target runtime -t commander-security:runtime .
+docker build --target token-issuer -t commander-security:token-issuer .
+container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true \
+    --entrypoint node commander-security:runtime --test --test-timeout=30000 \
+    /tmp/container-logging.test.mjs /tmp/runtime-dependencies.test.mjs \
+    /tmp/github-app-auth.test.mjs /tmp/github-app-commands.test.mjs)
+for suite in container-logging runtime-dependencies github-app-auth github-app-commands; do
+    docker cp "tests/$suite.test.mjs" "$container:/tmp/$suite.test.mjs"
+done
+docker start --attach "$container"
+docker inspect --format '{{.State.ExitCode}}' "$container"
+docker rm "$container"
 ```
 
-View protected logs locally (initial device authorization links and codes remain visible):
+Require the container's own exit code `0`. Tests cover RS256 assertions, identity/scope/expiry validation, atomic rotation, key permissions/symlinks, bounded retry, refresh failure/expiry/recovery/restart, secret-free failure messages, per-invocation gh refresh, real Git helper precedence and fallback blocking, previous/current token log masking, and the existing runtime dependency suite. Fast clocks/mocks complement the required live elapsed-time test; they do not replace it. Real API compatibility, mounts/RO enforcement and recovery must also be checked in an isolated Compose project after safe key placement.
 
-```sh
-docker compose logs -f commander
-```
-
-Do not paste authentication links or codes into tickets or shared logs.
-
-To recreate the running container after rebuilding:
-
-```sh
-docker compose up -d --force-recreate
-```
-
-## Persistent Volumes
-
-The Compose configuration creates two named volumes:
-
-```yaml
-volumes:
-  commander-home:
-  commander-workspace:
-```
-
-They are mounted as:
-
-```text
-commander-home      → /root
-commander-workspace → /workspace
-```
-
-`/root` persists Desktop Commander authentication and configuration.
-
-`/workspace` persists the cloned repository and all working-tree changes across container recreation.
-
-## Bootstrap
-
-The container entrypoint is:
-
-```text
-/usr/local/bin/bootstrap
-```
-
-`bootstrap.sh` requires:
-
-```text
-GH_TOKEN
-GITHUB_REPOSITORY
-GIT_USER_NAME
-GIT_USER_EMAIL
-```
-
-At startup it:
-
-1. configures the global Git user name
-2. configures the global Git user email
-3. runs `gh auth setup-git`
-4. derives the repository directory name from `GITHUB_REPOSITORY`
-5. clones the repository into `/workspace` if it is not already present
-6. starts the Desktop Commander Remote Device
-
-The destination directory is:
-
-```text
-/workspace/<repository-name>
-```
-
-The repository is cloned only when that directory does not already contain `.git`.
-
-## GitHub Authentication
-
-GitHub CLI uses the container's `GH_TOKEN` environment variable.
-
-Verify authentication with:
-
-```sh
-gh auth status
-```
-
-A working configuration should report an authenticated GitHub account using `GH_TOKEN`.
-
-The bootstrap script also runs:
-
-```sh
-gh auth setup-git
-```
-
-so Git over HTTPS can use GitHub CLI as its credential helper.
-
-## Why a Local Patch Is Required
-
-The Desktop Commander Remote Device starts the local Desktop Commander MCP through an MCP stdio transport.
-
-That transport does not automatically inherit every environment variable from the Remote Device process.
-
-Without additional handling, the effective environment chain is:
-
-```text
-Docker Compose
-    │
-    │ GH_TOKEN available
-    ▼
-Remote Device
-    │
-    │ restricted stdio environment
-    ▼
-Desktop Commander MCP
-    │
-    │ GH_TOKEN missing
-    ▼
-gh
-    └── unauthenticated
-```
-
-This repository applies a small local patch so that only `GH_TOKEN` is forwarded to the local Desktop Commander MCP.
-
-The resulting path is:
-
-```text
-Docker Compose
-    │
-    │ GH_TOKEN
-    ▼
-Remote Device
-    │
-    │ GH_TOKEN
-    ▼
-Desktop Commander MCP
-    │
-    ▼
-git / gh
-```
-
-## Local Patch
-
-The upstream Desktop Commander source remains an unmodified Git submodule.
-
-Container-specific behavior is implemented through:
-
-```text
-patches/pass-gh-token-to-mcp.patch
-patches/inherit-working-directory.patch
-```
-
-The token patch changes the `StdioClientTransport` environment from the upstream default to:
-
-```ts
-env: {
-    ...getDefaultEnvironment(),
-    ...config.env,
-    ...(process.env.GH_TOKEN
-        ? { GH_TOKEN: process.env.GH_TOKEN }
-        : {}),
-    DC_REMOTE_DEVICE: 'true'
-}
-```
-
-Only `GH_TOKEN` is explicitly forwarded.
-
-The entire `process.env` is deliberately not forwarded, to avoid exposing unrelated environment variables or secrets to Desktop Commander processes.
-
-The working-directory patch sets the local MCP launch configuration to `cwd: process.cwd()` so it inherits the Remote Device's working directory. The MCP entrypoint remains an absolute path to the built server.
-
-Both patches are applied during the Docker build:
-
-```dockerfile
-COPY DesktopCommanderMCP/ .
-
-COPY patches/pass-gh-token-to-mcp.patch /tmp/
-COPY patches/inherit-working-directory.patch /tmp/
-RUN patch -p1 < /tmp/pass-gh-token-to-mcp.patch \
-    && patch -p1 < /tmp/inherit-working-directory.patch \
-    && npm run build
-```
-
-Using a patch rather than replacing the entire source file also provides an upstream compatibility check: if the relevant upstream source changes enough that the patch can no longer be applied, the Docker build fails instead of silently overwriting newer code.
-
-## Verifying GH_TOKEN Forwarding
-
-After rebuilding and recreating the container, use Desktop Commander to run:
-
-```sh
-test -n "$GH_TOKEN" && echo set || echo unset
-```
-
-Expected output:
-
-```text
-set
-```
-
-Then verify GitHub CLI authentication:
-
-```sh
-gh auth status
-```
-
-If both succeed, GitHub CLI commands executed through Desktop Commander have access to the configured GitHub token.
-
-## Working Directory
-
-`bootstrap.sh` changes to the cloned repository before starting the Remote Device. The local MCP inherits that working directory, so commands started through Desktop Commander initially run in:
-
-```text
-/workspace/<repository-name>
-```
-
-The directory name is derived from `GITHUB_REPOSITORY`; changing the configured repository uses the same mechanism without a repository-specific path in the patch.
-
-After rebuilding and recreating the container, verify through Desktop Commander's `start_process`:
-
-```sh
-pwd
-```
-
-For example, with `GITHUB_REPOSITORY=the9ball/.dotfiles`, the expected output is:
-
-```text
-/workspace/.dotfiles
-```
-
-Then run `git status` and `gh auth status` through Desktop Commander. Neither an explicit `cd` nor `git -C` is needed for the initial repository, and the existing `GH_TOKEN` forwarding remains in effect.
-
-## Typical Development Workflow
-
-A repository workflow through Desktop Commander can include:
-
-```text
-GitHub Issue
-     │
-     ▼
-Desktop Commander
-     │
-     ├── inspect issue
-     ├── inspect repository
-     ├── create branch
-     ├── edit files
-     ├── run validation
-     ├── inspect diff
-     ├── commit
-     ├── push
-     └── create pull request
-```
-
-A suitable instruction to ChatGPT is:
-
-> Use Desktop Commander to work on the requested issue in the repository under `/workspace`.
->
-> Create a working branch from the repository's default branch, inspect the existing implementation, and make the smallest appropriate change.
->
-> Run applicable validation and review the diff before committing.
->
-> If everything looks correct, commit and push the branch and create a pull request referencing the issue.
->
-> Do not merge the pull request.
->
-> Stop and report back if the requirements are ambiguous or the required change becomes substantially larger than expected.
-
-Some external write operations may still be blocked by the surrounding tool safety layer even when the container, GitHub token, and Desktop Commander configuration are functioning correctly.
-
-If an operation is blocked by a safety check, do not attempt to bypass it through an alternative command or API. Perform that action manually instead.
+CI builds both exact Docker targets with fresh base/package resolution, runs offline suites without network or volumes, validates Compose, and scans HIGH/CRITICAL OS/application findings (including unfixed) plus secrets at all severities without printing matches. It has read-only repository permission and receives no runtime secrets. Scanning the final filesystem does not prove older layers/caches or historic logs are secret-free; inspect those separately without printing matches. No deployments or image publication are performed by this workflow.
 
 ## Updating Desktop Commander
 
-The upstream source is tracked as a Git submodule:
+Update the submodule to a reviewed stable release, then rebuild both targets. Keep `patches/restrict-mcp-environment.patch`, `patches/inherit-working-directory.patch` and `patches/runtime-dependencies.patch` aligned with that exact version. Patch application is a compatibility gate: investigate failures rather than replacing upstream files wholesale. Re-run offline tests, scans and the authenticated integration checks before recreating deployments.
 
-```text
-DesktopCommanderMCP
-```
+## Historical records
 
-To update it:
+The following records describe the PAT-based Issue #9 deployment and its validation before this migration. Its operational examples and token-forwarding notes are historical; use the App setup and validation instructions above for this version.
 
-```sh
-git -C DesktopCommanderMCP fetch origin --tags
-git -C DesktopCommanderMCP checkout --detach <stable-release-tag>
-```
-
-Choose the latest stable release tag after reviewing its release notes; the default branch can include unreleased changes. Update the pinned-version note above when changing the submodule.
-
-Then rebuild:
-
-```sh
-docker compose build
-```
-
-If the upstream source has changed incompatibly with the local patch, the build should fail while applying:
-
-```text
-patches/pass-gh-token-to-mcp.patch
-patches/inherit-working-directory.patch
-```
-
-Review the upstream changes and either:
-
-* regenerate the patch against the new pinned version, or
-* remove the patch if upstream now provides equivalent functionality
-
-The intention is to keep wrapper-specific changes small and temporary.
-
-## Regenerating the Patch
-
-When the patch needs updating, prefer generating it from Git rather than manually editing unified diff metadata.
-
-Temporarily edit:
-
-```text
-DesktopCommanderMCP/src/remote-device/desktop-commander-integration.ts
-```
-
-Then generate the patch:
-
-```sh
-cd DesktopCommanderMCP
-
-git diff -- src/remote-device/desktop-commander-integration.ts \
-  > ../patches/pass-gh-token-to-mcp.patch
-```
-
-Restore the submodule working tree:
-
-```sh
-git restore src/remote-device/desktop-commander-integration.ts
-cd ..
-```
-
-The `DesktopCommanderMCP` submodule should remain clean after the patch file has been generated.
-
-## Troubleshooting
-
-### `gh` is not authenticated
-
-First check whether Desktop Commander received the token:
-
-```sh
-test -n "$GH_TOKEN" && echo set || echo unset
-```
-
-If it prints:
-
-```text
-unset
-```
-
-verify that the local patch was applied and rebuild the image.
-
-If it prints:
-
-```text
-set
-```
-
-check:
-
-```sh
-gh auth status
-```
-
-### `git` reports that the current directory is not a repository
-
-Check `pwd` through Desktop Commander. The initial directory should be:
-
-```text
-/workspace/<repository-name>
-```
-
-If it is `/usr/src/app/dist`, rebuild the image and recreate the container so the working-directory patch takes effect. If a command explicitly changed directories, return to the repository before running Git commands.
-
-### The patch fails during Docker build
-
-If `patch -p1` fails, the pinned upstream source may no longer match the patch.
-
-Review the upstream changes and regenerate the patch against the current submodule commit.
-
-### Python HTML parsing and package management
-
-The image includes Python 3, pip, Beautiful Soup (`beautifulsoup4`), and `lxml` as Alpine packages. HTML parsing is available immediately:
-
-```sh
-python3 -c 'from bs4 import BeautifulSoup; import lxml; print("ok")'
-python3 -m pip --version
-```
-
-Alpine manages the system Python environment. Install additional Python packages in a virtual environment rather than running pip against the system interpreter:
-
-```sh
-python3 -m venv /tmp/analysis-venv
-/tmp/analysis-venv/bin/python -m pip --version
-/tmp/analysis-venv/bin/python -m pip install beautifulsoup4 lxml
-```
-
-Virtual environments are isolated from system packages by default, so install the libraries needed by that environment explicitly. Use `/workspace` instead of `/tmp` when the environment needs to persist across container recreation; remove temporary environments after use.
-
-### A repository-specific validation command is missing
-
-The image intentionally installs only a small general-purpose toolchain:
-
-* Bash
-* curl
-* Git
-* GitHub CLI
-* jq
-* patch
-* Node.js and npm
-
-Repository-specific build, test, lint, or formatting tools must be added separately if they are required.
-
-## Container hardening (Issue #9)
+## Historical Issue #9 implementation and validation
 
 ### Runtime restrictions
 
@@ -676,24 +217,7 @@ The registry lookup and subsequent local clean build failed with Docker credenti
 * **#11:** Design nonroot migration and ownership for existing `/root` and `/workspace` data before enabling a read-only filesystem. Current writes include Git configuration, Remote Device session/configuration, cloned repositories, tool output and temporary files; this list is a starting point, not a complete write audit. Preserve the restrictions added here and determine writable/tmpfs paths experimentally after #10.
 * **#11:** Inventory outbound GitHub API/HTTPS Git, Remote Device authentication/realtime, telemetry and package-download destinations before enforcing egress restrictions. No egress allowlist is implemented here. Audit telemetry, child-process logs, stored sessions, token-volume permissions, backup exclusions and token cleanup separately. Initial sign-in codes and existing persistent data remain sensitive.
 
-## Design Principles
-
-This wrapper follows these principles:
-
-* isolate Desktop Commander from the host
-* do not mount the Docker socket
-* do not mount host SSH keys or Git credentials
-* keep repository work inside a named Docker volume
-* use narrowly scoped GitHub credentials
-* forward only the environment variables explicitly required
-* keep upstream Desktop Commander as an unmodified submodule
-* express wrapper-specific upstream changes as explicit patches
-* fail visibly when an upstream change invalidates a patch
-* do not bypass external-action safety checks
-* keep merges under explicit human control
 
 ## License
 
-This repository is licensed under the MIT License. See [LICENSE](LICENSE).
-
-Desktop Commander MCP is included as a Git submodule and is licensed separately by its respective copyright holders.
+This repository is licensed under the MIT License. See [LICENSE](LICENSE). Desktop Commander MCP is included as a Git submodule and is licensed separately by its respective copyright holders.

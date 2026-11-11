@@ -10,6 +10,9 @@ test('console logs hide tokens and tool payloads while retaining connection guid
         console.log('PAT %s', process.env.GH_TOKEN);
         console.warn({ token: process.env.GH_TOKEN });
         console.error(new Error(process.env.GH_TOKEN));
+        console.log('old generation ghs_OLD_SYNTHETIC_GENERATION');
+        console.warn('new generation ghs_NEW_SYNTHETIC_GENERATION');
+        console.log('prefixghs_PREFIX_SYNTHETIC_GENERATION');
         console.debug('debug-canary');
         console.log('🔧 Received tool call call-1: start_process {"command":"argument-canary"} metadata: {"private":"metadata-canary"}');
         console.log('✅ Tool call start_process completed:\\r\\n {"text":"result-canary"}');
@@ -26,7 +29,8 @@ test('console logs hide tokens and tool payloads while retaining connection guid
     assert.equal(result.status, 0);
     const output = result.stdout + result.stderr;
     for (const hidden of ['synthetic-pat-canary', 'argument-canary', 'metadata-canary',
-        'result-canary', 'error-canary', 'debug-canary']) {
+        'result-canary', 'error-canary', 'debug-canary', 'ghs_OLD_SYNTHETIC_GENERATION',
+        'ghs_NEW_SYNTHETIC_GENERATION', 'ghs_PREFIX_SYNTHETIC_GENERATION']) {
         assert.equal(output.includes(hidden), false, `${hidden} must be omitted`);
     }
     assert.match(output, /startup ready/);

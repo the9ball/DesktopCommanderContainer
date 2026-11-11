@@ -16,6 +16,10 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [runtime, token-issuer]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -23,19 +27,35 @@ jobs:
           persist-credentials: false
       - name: Rebuild with current base and packages
         id: build
-        run: docker build --pull --no-cache -t commander-security:check .
+        run: docker build --pull --no-cache --target ${{ matrix.target }} -t commander-security:${{ matrix.target }} .
+      - name: Validate Compose without runtime secrets
+        run: docker compose --env-file .env.example config --quiet
       - name: Check protected console and runtime dependencies
+        if: matrix.target == 'runtime'
         run: |
-          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node commander-security:check --test --test-timeout=30000 /tmp/container-logging.test.mjs /tmp/runtime-dependencies.test.mjs)
+          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint node commander-security:runtime --test --test-timeout=30000 /tmp/container-logging.test.mjs /tmp/runtime-dependencies.test.mjs /tmp/github-app-auth.test.mjs /tmp/github-app-commands.test.mjs)
           trap 'docker rm -f "$container" >/dev/null' EXIT
           docker cp tests/container-logging.test.mjs "$container:/tmp/container-logging.test.mjs"
           docker cp tests/runtime-dependencies.test.mjs "$container:/tmp/runtime-dependencies.test.mjs"
+          docker cp tests/github-app-auth.test.mjs "$container:/tmp/github-app-auth.test.mjs"
+          docker cp tests/github-app-commands.test.mjs "$container:/tmp/github-app-commands.test.mjs"
           docker start --attach "$container"
           test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
+      - name: Check issuer in isolation
+        if: matrix.target == 'token-issuer'
+        run: |
+          container=$(docker create --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint sh commander-security:token-issuer -c 'test ! -e /usr/bin/git && test ! -e /usr/bin/gh && node --test --test-timeout=30000 /tmp/github-app-auth.test.mjs')
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          docker cp tests/github-app-auth.test.mjs "$container:/tmp/github-app-auth.test.mjs"
+          docker start --attach "$container"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
+      - name: Check named-volume authentication boundaries
+        if: matrix.target == 'runtime'
+        run: GITHUB_APP_TEST_IMAGE=commander-security:runtime node --test --test-timeout=180000 tests/github-app-docker.test.mjs
       - name: Scan OS and application dependencies
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
-          image-ref: commander-security:check
+          image-ref: commander-security:${{ matrix.target }}
           scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: 'false'
@@ -44,7 +64,7 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
-          image-ref: commander-security:check
+          image-ref: commander-security:${{ matrix.target }}
           scanners: secret
           severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
           format: template

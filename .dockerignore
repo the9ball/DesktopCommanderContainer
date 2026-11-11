@@ -4,8 +4,10 @@
 !.dockerignore
 !bootstrap.sh
 !container-logging.mjs
+!auth/
+!auth/*.mjs
 !patches/
-!patches/pass-gh-token-to-mcp.patch
+!patches/restrict-mcp-environment.patch
 !patches/inherit-working-directory.patch
 !patches/runtime-dependencies.patch
 !DesktopCommanderMCP/
@@ -37,6 +39,7 @@
 **/*.log
 **/*.key
 **/*.pem
+**/*.pem.*
 **/*.pfx
 **/*.p12
 **/.netrc
