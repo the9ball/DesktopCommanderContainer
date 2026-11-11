@@ -143,3 +143,127 @@ test('Git rejects argument, remote, push URL credentials and split URL rewrites'
         }
     } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+/** Compare supported global argument semantics with the actual Git binary, without network access. */
+test('Git global options preserve directory order and configuration precedence', () => {
+    const home = mkdtempSync(join(tmpdir(), 'github-app-context-'));
+    const repository = join(home, 'repository');
+    const bare = join(home, 'bare');
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home, ISSUE10_PROBE: 'environment-value' };
+    try {
+        assert.equal(command('/usr/bin/git', ['init', repository], { env }).status, 0);
+        assert.equal(command('/usr/bin/git', ['init', '--bare', bare], { env }).status, 0);
+        for (const location of [repository, bare]) {
+            assert.equal(command('/usr/bin/git', ['-C', location, 'config', 'issue10.probe', 'repository-value'], { env }).status, 0);
+        }
+        const contexts = [
+            ['--no-optional-locks', '-C', repository],
+            ['-C', home, '--no-optional-locks', '-C', 'repository'],
+            ['-C', home, '-C', '', '--no-pager', '-C', 'repository'],
+            ['-c', 'issue10.probe=first', '-C', repository, '--no-advice', '-c', 'issue10.probe=last'],
+            ['--git-dir', join(repository, '.git'), '--work-tree', repository, '--no-optional-locks'],
+            ['--git-dir=.git', '--work-tree=.', '--no-optional-locks', '-C', repository],
+            ['--namespace', 'fixture', '--config-env', 'issue10.probe=ISSUE10_PROBE', '-C', repository],
+            ['-C', repository, '--config-env=issue10.probe=ISSUE10_PROBE', '--namespace=fixture'],
+            ['-C', repository, '--attr-source', 'HEAD'],
+            ['--attr-source=HEAD', '-C', repository],
+            ['-C', bare, '--bare', '--no-optional-locks'],
+        ];
+        for (const flag of ['-p', '--paginate', '-P', '--no-pager', '--no-replace-objects',
+            '--no-lazy-fetch', '--no-advice', '--literal-pathspecs', '--no-literal-pathspecs',
+            '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs']) {
+            contexts.push([flag, '-C', repository, '--no-optional-locks']);
+        }
+        for (const context of contexts) {
+            const argumentsToGit = [...context, 'config', '--get', 'issue10.probe'];
+            const actual = command('/usr/bin/git', argumentsToGit, { env });
+            const wrapped = command('/usr/local/bin/git', argumentsToGit, { env });
+            assert.equal(actual.status, 0, 'Reference Git must accept the supported context');
+            assert.equal(wrapped.status, actual.status);
+            assert.equal(wrapped.stdout, actual.stdout);
+        }
+        // A subcommand's own -c is not a global -c; version/help are command aliases in Git.
+        for (const argumentsToGit of [['-C', repository, 'status', '--short'], ['-C', repository, 'log', '-c', '--all'],
+            ['--no-optional-locks', '--version'], ['-v']]) {
+            const actual = command('/usr/bin/git', argumentsToGit, { env });
+            const wrapped = command('/usr/local/bin/git', argumentsToGit, { env });
+            assert.equal(actual.status, 0);
+            assert.equal(wrapped.status, actual.status);
+            assert.equal(wrapped.stdout, actual.stdout);
+        }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+/** Detect credentials in the real option-selected repository for missing, expired and valid App files. */
+test('global flag ordering cannot bypass repository and command-line credential checks', () => {
+    const home = mkdtempSync(join(tmpdir(), 'github-app-global-auth-'));
+    const repository = join(home, 'repository');
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home,
+        ISSUE10_HEADER: 'Authorization: Bearer SYNTHETIC_OPTION_PAT' };
+    const contexts = [
+        ['--no-optional-locks', '-C', repository],
+        ['-C', repository, '--no-optional-locks'],
+        ['-c', 'issue10.probe=first', '--no-optional-locks', '-C', repository, '-c', 'issue10.probe=last'],
+        ['-C', home, '--no-pager', '-C', '', '--no-optional-locks', '-C', 'repository'],
+        ['--git-dir', join(repository, '.git'), '--no-optional-locks', '--work-tree', repository],
+        ['--no-optional-locks', '--git-dir=.git', '--work-tree=.', '-C', repository],
+    ];
+    /** Require the credential policy's local refusal, never a timeout or unrelated Git failure. */
+    function refused(context) {
+        const result = command('/usr/local/bin/git', [...context, 'push', 'origin', 'HEAD'], { env });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /Unsupported Git authentication configuration/);
+        assert.equal((result.stdout + result.stderr).includes('SYNTHETIC_OPTION_PAT'), false);
+    }
+    try {
+        assert.equal(command('/usr/bin/git', ['init', repository], { env }).status, 0);
+        for (const state of ['missing', 'expired', 'valid']) {
+            if (state === 'missing') rmSync('/run/github-app-token/token.json', { force: true });
+            else publish('GLOBAL_OPTIONS', state === 'expired' ? Date.now() - 1000 : Date.now() + 3600000);
+            for (const [key, value] of [
+                ['remote.origin.url', `https://x-access-token:SYNTHETIC_OPTION_PAT@github.com/${identity.repository}.git`],
+                ['remote.origin.pushurl', `https://x-access-token:SYNTHETIC_OPTION_PAT@github.com/${identity.repository}.git`],
+                ['http.https://github.com/.extraHeader', 'Authorization: Bearer SYNTHETIC_OPTION_PAT'],
+            ]) {
+                assert.equal(command('/usr/bin/git', ['-C', repository, 'config', key, value], { env }).status, 0);
+                for (const context of contexts) refused(context);
+                assert.equal(command('/usr/bin/git', ['-C', repository, 'config', '--unset', key], { env }).status, 0);
+            }
+            for (const context of [
+                ['--no-optional-locks', '-c', `http.extraHeader=${env.ISSUE10_HEADER}`, '-C', repository],
+                ['-C', repository, '--no-optional-locks', '-c', `http.extraHeader=${env.ISSUE10_HEADER}`],
+                ['--config-env=http.extraHeader=ISSUE10_HEADER', '--no-optional-locks', '-C', repository],
+                ['-C', repository, '--config-env', 'http.extraHeader=ISSUE10_HEADER', '--no-advice'],
+            ]) refused(context);
+        }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+/** Refuse unreviewed grammar and implicit alias expansion instead of guessing a command boundary. */
+test('unsupported global grammar, missing operands and configured aliases fail closed', () => {
+    const home = mkdtempSync(join(tmpdir(), 'github-app-unsupported-'));
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: home };
+    try {
+        assert.equal(command('/usr/bin/git', ['init', home], { env }).status, 0);
+        for (const prefix of [
+            ['--future-option'], ['--exec-path=/tmp/SYNTHETIC_OPTION_PAT'], ['--shallow-file', '/tmp/unused'],
+            ['--'], ['-Cattached'], ['-cissue10.probe=attached'],
+        ]) {
+            const result = command('/usr/local/bin/git', [...prefix, '--no-optional-locks', '-C', home, 'push'], { env });
+            assert.equal(result.status, 1);
+            assert.match(result.stderr, /Unsupported Git global options/);
+            assert.equal(result.stderr.includes('SYNTHETIC_OPTION_PAT'), false);
+        }
+        for (const option of ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source']) {
+            const result = command('/usr/local/bin/git', ['--no-optional-locks', option], { env });
+            assert.equal(result.status, 1);
+            assert.match(result.stderr, /Unsupported Git global options/);
+        }
+        assert.equal(command('/usr/bin/git', ['-C', home, 'config', 'alias.hidden-push',
+            '-c http.extraHeader=SYNTHETIC_OPTION_PAT push'], { env }).status, 0);
+        const alias = command('/usr/local/bin/git', ['--no-optional-locks', '-C', home, 'hidden-push'], { env });
+        assert.equal(alias.status, 1);
+        assert.match(alias.stderr, /Unsupported Git authentication configuration/);
+        assert.equal(alias.stderr.includes('SYNTHETIC_OPTION_PAT'), false);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+});
