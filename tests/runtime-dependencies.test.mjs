@@ -10,8 +10,12 @@ const requireFromApp = createRequire('/usr/src/app/package.json');
 /** Verify that the delivered image keeps production dependencies and removes build tooling. */
 test('runtime dependency closure excludes development packages', () => {
     for (const packageName of ['decompress', 'download', 'nexe', '@anthropic-ai/mcpb',
-        'node-forge', '@modelcontextprotocol/ext-apps', 'typescript']) {
+        '@modelcontextprotocol/ext-apps', 'typescript']) {
         assert.throws(() => requireFromApp.resolve(packageName), { code: 'MODULE_NOT_FOUND' });
+    }
+    // The Remote Device imports these at startup for its MQTT transport.
+    for (const packageName of ['mqtt', 'node-forge']) {
+        assert.ok(requireFromApp.resolve(packageName));
     }
     assert.equal(JSON.parse(readFileSync('/usr/src/app/node_modules/body-parser/package.json')).version, '2.4.0');
     assert.equal(JSON.parse(readFileSync('/usr/src/app/node_modules/markdown-it/package.json')).version, '14.3.3');
