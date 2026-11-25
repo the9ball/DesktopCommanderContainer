@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
@@ -10,11 +11,16 @@ const requireFromApp = createRequire('/usr/src/app/package.json');
 /** Verify that the delivered image keeps production dependencies and removes build tooling. */
 test('runtime dependency closure excludes development packages', () => {
     for (const packageName of ['decompress', 'download', 'nexe', '@anthropic-ai/mcpb',
-        'node-forge', '@modelcontextprotocol/ext-apps', 'typescript']) {
+        '@modelcontextprotocol/ext-apps', 'typescript']) {
         assert.throws(() => requireFromApp.resolve(packageName), { code: 'MODULE_NOT_FOUND' });
+    }
+    // The Remote Device imports these at startup for its MQTT transport.
+    for (const packageName of ['mqtt', 'node-forge']) {
+        assert.ok(requireFromApp.resolve(packageName));
     }
     assert.equal(JSON.parse(readFileSync('/usr/src/app/node_modules/body-parser/package.json')).version, '2.4.0');
     assert.equal(JSON.parse(readFileSync('/usr/src/app/node_modules/markdown-it/package.json')).version, '14.3.3');
+    assert.equal(JSON.parse(readFileSync('/usr/src/app/node_modules/node-forge/package.json')).version, '1.4.4');
     assert.equal(execFileSync('npm', ['--version'], { encoding: 'utf8', timeout: 10000 }).trim(), '11.21.2');
     assert.equal(JSON.parse(readFileSync('/usr/local/lib/node_modules/npm/node_modules/brace-expansion/package.json')).version, '5.0.12');
     assert.equal(JSON.parse(readFileSync('/usr/local/lib/node_modules/npm/node_modules/undici/package.json')).version, '6.29.1');
@@ -29,6 +35,23 @@ test('Remote Device and its bundled browser UIs survive pruning', async () => {
         new Script(runtime, { filename: artifact });
         assert.doesNotMatch(runtime, /\b(?:import|require)\s*\(\s*['"]@modelcontextprotocol\/ext-apps/);
     }
+});
+
+/** Sign a certificate request the way MQTT enrollment does with the patched node-forge. */
+test('MQTT certificate requests can be signed offline', () => {
+    const forge = requireFromApp('node-forge');
+    const { privateKey } = generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    const forgeKey = forge.pki.privateKeyFromPem(privateKey);
+    const request = forge.pki.createCertificationRequest();
+    request.publicKey = forge.pki.setRsaPublicKey(forgeKey.n, forgeKey.e);
+    request.setSubject([{ name: 'commonName', value: 'offline-device' }]);
+    request.sign(forgeKey, forge.md.sha256.create());
+    const parsedRequest = forge.pki.certificationRequestFromPem(forge.pki.certificationRequestToPem(request));
+    assert.equal(parsedRequest.verify(), true);
 });
 
 /** Encode and decode a WebSocket frame locally and execute the bundled ripgrep binary. */

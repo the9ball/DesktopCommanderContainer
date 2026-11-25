@@ -1,6 +1,26 @@
+--- a/package.json
++++ b/package.json
+@@ -116,7 +116,7 @@
+     "markdown-it": "^14.1.0",
+     "md-to-pdf": "^5.2.5",
+     "mqtt": "5.16.0",
+-    "node-forge": "1.4.0",
++    "node-forge": "1.4.4",
+     "open": "^10.2.0",
+     "pdf-lib": "^1.17.1",
+     "pizzip": "^3.2.0",
 --- a/package-lock.json
 +++ b/package-lock.json
-@@ -3614,18 +3614,18 @@
+@@ -31,7 +31,7 @@
+         "markdown-it": "^14.1.0",
+         "md-to-pdf": "^5.2.5",
+         "mqtt": "5.16.0",
+-        "node-forge": "1.4.0",
++        "node-forge": "1.4.4",
+         "open": "^10.2.0",
+         "pdf-lib": "^1.17.1",
+         "pizzip": "^3.2.0",
+@@ -3761,18 +3761,18 @@
        "license": "MIT"
      },
      "node_modules/body-parser": {
@@ -25,7 +45,7 @@
          "raw-body": "^3.0.2",
          "type-is": "^2.1.0"
        },
-@@ -8127,9 +8127,9 @@
+@@ -8565,9 +8565,9 @@
        "license": "ISC"
      },
      "node_modules/markdown-it": {
@@ -38,7 +58,20 @@
        "funding": [
          {
            "type": "github",
-@@ -10457,9 +10457,9 @@
+@@ -10005,9 +10005,9 @@
+       }
+     },
+     "node_modules/node-forge": {
+-      "version": "1.4.0",
+-      "resolved": "https://registry.npmjs.org/node-forge/-/node-forge-1.4.0.tgz",
+-      "integrity": "sha512-LarFH0+6VfriEhqMMcLX2F7SwSXeWwnEAJEsYm5QKWchiVYVvJyV9v7UDvUv+w5HO23ZpQTXDv/GxdDdMyOuoQ==",
++      "version": "1.4.4",
++      "resolved": "https://registry.npmjs.org/node-forge/-/node-forge-1.4.4.tgz",
++      "integrity": "sha512-T6VRRpF3+czIGcXW/LOeoD7Ej28d8CF1UMEAbJyJRUtYMvyXAgxUPW2kbUibumvV9LiUQAznJOFyeYclzSJMMg==",
+       "license": "(BSD-3-Clause OR GPL-2.0)",
+       "engines": {
+         "node": ">= 6.13.0"
+@@ -11071,9 +11071,9 @@
        }
      },
      "node_modules/qs": {

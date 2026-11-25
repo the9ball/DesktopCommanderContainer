@@ -26,7 +26,7 @@ Docker container
 
 Desktop Commander is included as a Git submodule and built inside the image.
 
-The pinned version is **v0.3.0** (67694caa7f54ee2ca70d455ed730be231ed3fbfc).
+The pinned version is **v0.3.4** (9a101b17e44577f0baefa4c7120f087881c5cc56).
 The container patches retain the restricted MCP environment (GH_TOKEN plus the SDK defaults) and the repository working directory.
 
 ```text
@@ -130,7 +130,7 @@ The Docker build:
 5. prunes development dependencies with lifecycle scripts disabled
 6. copies the built, pruned application into a runtime stage descended directly from the base, then installs the bootstrap and protected logging preload
 
-The runtime dependency patch updates `body-parser` to `2.4.0`, `markdown-it` to `14.3.3`, and its required `qs` resolution to `6.17.1`. It preserves the pinned submodule and all other lock entries. The final image retains the application source, `dist`, manifests and vendored package layout, but excludes installed development tools such as `nexe`, `decompress` and `node-forge`. Development dependencies can still exist in the disposable build stage and local build cache; the runtime stage does not inherit those layers. The separately bundled npm is updated within major version 11, and its download cache is cleaned in the same build step.
+The runtime dependency patch updates `body-parser` to `2.4.0`, `markdown-it` to `14.3.3`, its required `qs` resolution to `6.17.1`, and `node-forge` to `1.4.4` (upstream pins the vulnerable `1.4.0` exactly, so `package.json` is patched too). It preserves the pinned submodule and all other lock entries. The final image retains the application source, `dist` and manifests, but excludes installed development tools such as `nexe` and `decompress`. `mqtt` and `node-forge` are runtime dependencies of the Remote Device's MQTT transport and remain installed. Development dependencies can still exist in the disposable build stage and local build cache; the runtime stage does not inherit those layers. The separately bundled npm is updated within major version 11, and its download cache is cleaned in the same build step.
 
 To force a clean rebuild:
 
